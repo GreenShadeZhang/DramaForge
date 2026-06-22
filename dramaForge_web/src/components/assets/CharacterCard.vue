@@ -6,25 +6,34 @@ import type { CharacterDetail } from '@/types/character'
 const props = defineProps<{
   character: CharacterDetail
   regenerating?: boolean
+  uploadingImage?: boolean
 }>()
 
 const emit = defineEmits<{
   edit: [CharacterDetail]
   regenerate: [CharacterDetail]
+  addImage: [CharacterDetail]
+  openGallery: [CharacterDetail]
 }>()
 
-const mainImage = computed(() => props.character.reference_images?.[0])
+const mainImage = computed(() => props.character.reference_images?.[0]?.url)
+const imageCount = computed(() => props.character.reference_images?.length || 0)
 </script>
 
 <template>
   <div class="char-card group">
-    <!-- Image -->
-    <div class="char-card-img">
+    <!-- Image area — click to open gallery -->
+    <div class="char-card-img" @click.stop="emit('openGallery', character)">
+      <!-- Hover hint -->
+      <div class="char-img-hover-hint">
+        <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><rect x="3" y="3" width="6" height="6" rx="1" stroke="currentColor" stroke-width="1.5"/><rect x="11" y="3" width="6" height="6" rx="1" stroke="currentColor" stroke-width="1.5"/><rect x="3" y="11" width="6" height="6" rx="1" stroke="currentColor" stroke-width="1.5"/><rect x="11" y="11" width="6" height="6" rx="1" stroke="currentColor" stroke-width="1.5"/></svg>
+        <span class="text-[11px] mt-1">查看全部</span>
+      </div>
       <img
         v-if="mainImage"
         :src="mainImage"
         :alt="character.name"
-        class="w-full h-full object-cover transition-transform duration-400 group-hover:scale-105"
+        class="w-full h-full object-cover group-hover:scale-105 transition-transform duration-400"
       />
       <div v-else class="char-card-placeholder">👤</div>
 
@@ -34,8 +43,20 @@ const mainImage = computed(() => props.character.reference_images?.[0])
         class="char-role-badge"
       >主角</span>
 
+      <!-- Image count badge -->
+      <span v-if="imageCount > 0" class="char-img-count">{{ imageCount }}图</span>
+
       <!-- Action buttons — visible on hover -->
       <div class="char-card-actions">
+        <button
+          class="char-action-btn"
+          title="上传形象图"
+          :disabled="uploadingImage"
+          @click.stop="emit('addImage', character)"
+        >
+          <svg v-if="uploadingImage" class="animate-spin" width="14" height="14" viewBox="0 0 14 14" fill="none"><circle cx="7" cy="7" r="5.5" stroke="currentColor" stroke-width="1.4" stroke-dasharray="24 8" stroke-linecap="round"/></svg>
+          <svg v-else width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M7 2v10M2 7h10" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+        </button>
         <button
           class="char-action-btn"
           title="编辑角色"
@@ -60,7 +81,7 @@ const mainImage = computed(() => props.character.reference_images?.[0])
     <div class="char-card-info">
       <div class="char-card-name">{{ character.name }}</div>
       <div class="char-card-meta">
-        {{ CharacterRoleLabel[character.role] || '配角' }} · {{ character.reference_images?.length || 0 }} 形象
+        {{ CharacterRoleLabel[character.role] || '配角' }} · {{ imageCount }} 形象
       </div>
     </div>
   </div>
@@ -73,10 +94,31 @@ const mainImage = computed(() => props.character.reference_images?.[0])
 
 .char-card-img {
   aspect-ratio: 3 / 4;
-  background: #F3F4F6;
-  border-radius: 12px;
+  background: #FDF4D8;
+  border-radius: 2px;
+  border: 2px solid #D4C898;
   position: relative;
   overflow: hidden;
+  box-shadow: 3px 3px 0 0 rgba(0,0,0,0.08);
+  cursor: pointer;
+}
+
+/* Hover hint over image */
+.char-img-hover-hint {
+  position: absolute;
+  inset: 0;
+  background: rgba(0,0,0,0.45);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  opacity: 0;
+  transition: opacity 0.2s;
+  z-index: 3;
+}
+.char-card-img:hover .char-img-hover-hint {
+  opacity: 1;
 }
 
 .char-card-placeholder {
@@ -85,7 +127,7 @@ const mainImage = computed(() => props.character.reference_images?.[0])
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 40px;
+  font-size: 48px;
   color: #A89870;
 }
 
@@ -94,9 +136,23 @@ const mainImage = computed(() => props.character.reference_images?.[0])
   top: 8px;
   left: 8px;
   padding: 3px 10px;
-  border-radius: 6px;
+  border-radius: 2px;
   background: #E8A317;
-  color: #2D2515;
+  color: #1A1508;
+  font-family: 'Press Start 2P', monospace;
+  font-size: 9px;
+  letter-spacing: 1px;
+  border: 2px solid #C88A0C;
+}
+
+.char-img-count {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  padding: 2px 8px;
+  border-radius: 2px;
+  background: rgba(0,0,0,0.55);
+  color: #fff;
   font-size: 11px;
   font-weight: 600;
 }
@@ -106,12 +162,11 @@ const mainImage = computed(() => props.character.reference_images?.[0])
   position: absolute;
   bottom: 10px;
   left: 50%;
-  transform: translateX(-50%);
+  transform: translateX(-50%) translateY(6px);
   display: flex;
   gap: 6px;
   opacity: 0;
   transition: opacity 0.2s, transform 0.2s;
-  transform: translateX(-50%) translateY(6px);
 }
 .char-card:hover .char-card-actions {
   opacity: 1;
@@ -128,19 +183,20 @@ const mainImage = computed(() => props.character.reference_images?.[0])
   justify-content: center;
   width: 32px;
   height: 32px;
-  border-radius: 10px;
-  border: none;
-  background: rgba(255, 255, 255, 0.95);
-  color: #4B5563;
+  border-radius: 2px;
+  border: 2px solid #D4C898;
+  background: #FEF9E7;
+  color: #6B5D40;
   cursor: pointer;
   transition: all 0.15s;
-  backdrop-filter: blur(4px);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+  box-shadow: 2px 2px 0 0 rgba(0,0,0,0.1);
 }
 .char-action-btn:hover {
-  background: #FDF5D6;
-  color: #E8A317;
-  box-shadow: 0 4px 12px rgba(232, 163, 23, 0.2);
+  background: #E8A317;
+  border-color: #C88A0C;
+  color: #fff;
+  box-shadow: 2px 2px 0 0 #C88A0C;
+  transform: translate(1px, 1px);
 }
 .char-action-btn:disabled {
   opacity: 0.7;
@@ -158,12 +214,12 @@ const mainImage = computed(() => props.character.reference_images?.[0])
 .char-card-name {
   font-size: 14px;
   font-weight: 600;
-  color: #111827;
+  color: #2D2515;
   line-height: 1.3;
 }
 .char-card-meta {
   font-size: 12px;
-  color: #9CA3AF;
+  color: #8B7A5A;
   margin-top: 2px;
 }
 </style>

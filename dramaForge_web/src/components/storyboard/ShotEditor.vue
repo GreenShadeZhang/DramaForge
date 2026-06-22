@@ -32,7 +32,7 @@ const characterOptions = computed(() =>
   (props.characters || []).map(c => ({
     id: c.id,
     name: c.name,
-    thumbnail: c.reference_images?.[0],
+    thumbnail: c.reference_images?.[0]?.url,
   }))
 )
 

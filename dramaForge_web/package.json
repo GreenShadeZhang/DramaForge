@@ -12,6 +12,7 @@
     "@iconify/vue": "^5.0.0",
     "@tailwindcss/vite": "^4.2.2",
     "axios": "^1.14.0",
+    "docx": "^9.7.1",
     "naive-ui": "^2.44.1",
     "pinia": "^3.0.4",
     "tailwindcss": "^4.2.2",

@@ -83,8 +83,8 @@ const totalAssets = computed(() => props.characters.length + props.scenes.length
 
               <span class="character-thumb">
                 <img
-                  v-if="char.reference_images?.[0]"
-                  :src="char.reference_images[0]"
+                  v-if="char.reference_images?.[0]?.url"
+                  :src="char.reference_images[0]?.url"
                   :alt="char.name"
                   loading="lazy"
                 />

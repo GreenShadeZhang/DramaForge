@@ -7,6 +7,7 @@ import { useGenerationStore } from '@/stores/generation'
 import { DramaGenreLabel, ProjectStep } from '@/types/enums'
 import LoadingOverlay from '@/components/common/LoadingOverlay.vue'
 import EmptyState from '@/components/common/EmptyState.vue'
+import { exportScriptToDocx } from '@/utils/exportDocx'
 
 const route = useRoute()
 const router = useRouter()
@@ -125,6 +126,23 @@ const summaryBlocks = computed(() => {
     { label: '视频风格', value: styleTags.value },
   ].filter(item => item.value && item.value.trim())
 })
+
+const downloading = ref(false)
+
+async function handleDownload() {
+  if (downloading.value || !scriptStore.script) return
+  downloading.value = true
+  try {
+    await exportScriptToDocx(
+      scriptStore.script,
+      projectStore.currentProject?.title,
+    )
+  } catch (e) {
+    console.error('导出 docx 失败', e)
+  } finally {
+    downloading.value = false
+  }
+}
 
 const copying = ref(false)
 const copySucceeded = ref(false)
@@ -343,13 +361,11 @@ function toggleAllEpisodes() {
         <button
           class="script-action-btn"
           type="button"
-          :class="{ success: copySucceeded }"
-          :disabled="copying"
-          :aria-busy="copying"
-          @click="handleCopy"
+          :disabled="downloading"
+          @click="handleDownload"
         >
-          <span class="script-action-icon">{{ copySucceeded ? '✓' : '⧉' }}</span>
-          <span>{{ copying ? '复制中' : copySucceeded ? '已复制' : '复制全部' }}</span>
+          <span class="script-action-icon">⬇</span>
+          <span>{{ downloading ? '生成中...' : '下载剧本 .docx' }}</span>
         </button>
       </div>
 
@@ -384,71 +400,63 @@ function toggleAllEpisodes() {
         </div>
       </details>
 
-      <section class="script-document-section">
-        <div class="script-content-heading">
-          <div class="script-content-title">
-            <span class="script-section-heading">分集剧本</span>
-          </div>
-          <button
-            class="script-inline-btn"
-            type="button"
-            :aria-expanded="allExpanded"
-            @click="toggleAllEpisodes"
-          >
-            <span class="script-action-icon">{{ allExpanded ? '−' : '+' }}</span>
-            <span>{{ allExpanded ? '收起全部' : '展开全部' }}</span>
-          </button>
-        </div>
+      <details class="script-document-section" open>
+        <summary class="script-document-summary">
+          <span class="script-section-caret">›</span>
+          <span class="script-section-heading">分集剧本</span>
+        </summary>
 
-        <div class="script-episodes">
-          <details
-            v-for="ep in scriptStore.script.episodes"
-            :key="ep.id"
-            class="script-episode"
-            :open="expandedEpisodes.has(ep.id)"
-          >
-            <summary class="script-episode-summary" @click.prevent="toggleEpisode(ep.id)">
-              <span class="script-episode-arrow">›</span>
-              <span class="script-episode-index">{{ ep.number }}.</span>
-              <span class="script-episode-title">{{ ep.title || '无标题' }}</span>
-            </summary>
-            <div v-if="!ep.content" class="script-episode-empty">暂无内容</div>
-            <div v-else class="script-episode-content">
-              <template v-for="(line, li) in formatScriptContent(ep.content)" :key="li">
-                <div v-if="line.type === 'empty'" class="fmt-empty" />
-                <div v-else-if="line.type === 'separator'" class="fmt-separator">
-                  <span>---</span>
-                </div>
-                <div v-else-if="line.type === 'scene'" class="fmt-scene">
-                  <span v-if="line.meta" class="fmt-scene-tag">{{ line.meta }}</span>
-                  <span class="fmt-scene-text">{{ line.text }}</span>
-                </div>
-                <div v-else-if="line.type === 'dialogue'" class="fmt-dialogue">
-                  <span class="fmt-dialogue-speaker">{{ line.meta }}</span>
-                  <span class="fmt-dialogue-text">{{ line.text }}</span>
-                </div>
-                <div v-else-if="line.type === 'action'" class="fmt-action">{{ line.text }}</div>
-                <div v-else-if="line.type === 'music'" class="fmt-music">
-                  <span class="fmt-music-icon">♪</span>
-                  <span>{{ line.text }}</span>
-                </div>
-                <div v-else-if="line.type === 'hook'" class="fmt-hook">
-                  <span class="fmt-hook-icon">🎣</span>
-                  <span>{{ line.text }}</span>
-                </div>
-                <div v-else-if="line.type === 'preview'" class="fmt-preview">
-                  <span class="fmt-preview-icon">📺</span>
-                  <span>{{ line.text }}</span>
-                </div>
-                <div v-else class="fmt-text">{{ line.text }}</div>
-              </template>
+        <div class="script-section-body">
+          <div class="script-episodes">
+            <details
+              v-for="ep in scriptStore.script.episodes"
+              :key="ep.id"
+              class="script-episode"
+              :open="expandedEpisodes.has(ep.id)"
+            >
+              <summary class="script-episode-summary" @click.prevent="toggleEpisode(ep.id)">
+                <span class="script-episode-arrow">›</span>
+                <span class="script-episode-index">{{ ep.number }}.</span>
+                <span class="script-episode-title">{{ ep.title || '无标题' }}</span>
+              </summary>
+              <div v-if="!ep.content" class="script-episode-empty">暂无内容</div>
+              <div v-else class="script-episode-content">
+                <template v-for="(line, li) in formatScriptContent(ep.content)" :key="li">
+                  <div v-if="line.type === 'empty'" class="fmt-empty" />
+                  <div v-else-if="line.type === 'separator'" class="fmt-separator">
+                    <span>---</span>
+                  </div>
+                  <div v-else-if="line.type === 'scene'" class="fmt-scene">
+                    <span v-if="line.meta" class="fmt-scene-tag">{{ line.meta }}</span>
+                    <span class="fmt-scene-text">{{ line.text }}</span>
+                  </div>
+                  <div v-else-if="line.type === 'dialogue'" class="fmt-dialogue">
+                    <span class="fmt-dialogue-speaker">{{ line.meta }}</span>
+                    <span class="fmt-dialogue-text">{{ line.text }}</span>
+                  </div>
+                  <div v-else-if="line.type === 'action'" class="fmt-action">{{ line.text }}</div>
+                  <div v-else-if="line.type === 'music'" class="fmt-music">
+                    <span class="fmt-music-icon">♪</span>
+                    <span>{{ line.text }}</span>
+                  </div>
+                  <div v-else-if="line.type === 'hook'" class="fmt-hook">
+                    <span class="fmt-hook-icon">🎣</span>
+                    <span>{{ line.text }}</span>
+                  </div>
+                  <div v-else-if="line.type === 'preview'" class="fmt-preview">
+                    <span class="fmt-preview-icon">📺</span>
+                    <span>{{ line.text }}</span>
+                  </div>
+                  <div v-else class="fmt-text">{{ line.text }}</div>
+                </template>
+              </div>
+            </details>
+            <div v-if="!scriptStore.script.episodes?.length" class="script-episode-empty">
+              暂无剧集内容
             </div>
-          </details>
-          <div v-if="!scriptStore.script.episodes?.length" class="script-episode-empty">
-            暂无剧集内容
           </div>
         </div>
-      </section>
+      </details>
     </article>
   </div>
 
@@ -526,19 +534,6 @@ function toggleAllEpisodes() {
   color: #444;
   line-height: 1.8;
   white-space: pre-wrap;
-}
-
-/* ── Script content header ── */
-.script-content-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 16px;
-}
-.script-content-actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
 }
 
 /* ── Episode accordions ── */
