@@ -5,7 +5,7 @@ DramaForge v2.0 — Assets Schemas (Character + SceneLocation)
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Optional
+from typing import Any, Optional
 
 from pydantic import BaseModel, Field
 
@@ -21,7 +21,7 @@ class CharacterDetail(BaseModel):
     role: CharacterRole = CharacterRole.SUPPORTING
     description: Optional[str] = ""
     voice_desc: Optional[str] = ""
-    reference_images: list[str] = []
+    reference_images: list[Any] = []  # [{url, name, is_primary}]
     created_at: datetime
 
     model_config = {"from_attributes": True}
@@ -32,7 +32,7 @@ class CharacterUpdate(BaseModel):
     role: Optional[CharacterRole] = None
     description: Optional[str] = None
     voice_desc: Optional[str] = None
-    reference_images: Optional[list[str]] = None
+    reference_images: Optional[list[Any]] = None  # [{url, name, is_primary}]
 
 
 class CharacterRegenerateRequest(BaseModel):
@@ -49,7 +49,7 @@ class SceneDetail(BaseModel):
     description: Optional[str] = ""
     time_of_day: Optional[str] = "day"
     interior: bool = True
-    reference_images: list[str] = []
+    reference_images: list[Any] = []  # [{url, name, is_primary}]
     created_at: datetime
 
     model_config = {"from_attributes": True}
@@ -60,7 +60,7 @@ class SceneUpdate(BaseModel):
     description: Optional[str] = None
     time_of_day: Optional[str] = None
     interior: Optional[bool] = None
-    reference_images: Optional[list[str]] = None
+    reference_images: Optional[list[Any]] = None  # [{url, name, is_primary}]
 
 
 class SceneRegenerateRequest(BaseModel):

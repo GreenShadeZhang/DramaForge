@@ -128,6 +128,14 @@ function canvasUpdateName(idx: number, name: string) {
   canvasImages.value[idx] = { ...canvasImages.value[idx], name }
 }
 
+function canvasSetPrimary(idx: number) {
+  canvasImages.value = canvasImages.value.map((img, i) => ({
+    ...img,
+    is_primary: i === idx,
+  }))
+  canvasSave()
+}
+
 async function canvasDeleteImage(idx: number) {
   canvasImages.value = canvasImages.value.filter((_, i) => i !== idx)
   await canvasSave()
@@ -140,7 +148,7 @@ async function canvasHandleFile(e: Event) {
   uploadingCharId.value = canvasChar.value?.id || null
   try {
     const fd = new FormData(); fd.append('file', file)
-    const { data } = await assetsApi.uploadAsset(fd)
+    const { data } = await assetsApi.uploadAsset(projectId, fd, false)
     if (data?.url) {
       canvasImages.value = [...canvasImages.value, { url: data.url, name: file.name.replace(/\.[^.]+$/, '') }]
       await canvasSave()
@@ -174,7 +182,7 @@ async function handleCharImageFile(e: Event) {
   try {
     const formData = new FormData()
     formData.append('file', file)
-    const { data: uploaded } = await assetsApi.uploadAsset(formData)
+    const { data: uploaded } = await assetsApi.uploadAsset(projectId, formData, false)
     if (uploaded?.url) {
       const char = assetsStore.characters.find(c => c.id === charId)
       const existing = char?.reference_images || []
@@ -362,6 +370,15 @@ async function handleApprove() {
               <!-- Image -->
               <div class="canvas-card-pic">
                 <img :src="img.url" :alt="canvasImageName(img, idx)" class="w-full h-full object-cover" />
+                <!-- Primary badge -->
+                <span v-if="img.is_primary" class="canvas-primary-badge" title="当前展示图">⭐</span>
+                <!-- Set as primary button -->
+                <button
+                  v-if="!img.is_primary"
+                  class="canvas-set-primary-btn"
+                  title="设为展示图"
+                  @click="canvasSetPrimary(idx)"
+                >设为展示</button>
                 <!-- Delete overlay -->
                 <button class="canvas-delete-btn" title="删除" @click="canvasDeleteImage(idx)">
                   <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M2.5 4h9M5 4V2.5a.5.5 0 01.5-.5h3a.5.5 0 01.5.5V4M10.5 4v6a2 2 0 01-2 2h-3a2 2 0 01-2-2V4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
@@ -684,6 +701,39 @@ async function handleApprove() {
   overflow: hidden;
   background: #FDF4D8;
 }
+.canvas-primary-badge {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  font-size: 18px;
+  filter: drop-shadow(0 1px 2px rgba(0,0,0,0.3));
+  z-index: 2;
+}
+.canvas-set-primary-btn {
+  position: absolute;
+  bottom: 8px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 4px 10px;
+  border-radius: 2px;
+  border: 2px solid #F5C34B;
+  background: rgba(0,0,0,0.6);
+  color: #F5C34B;
+  font-family: 'Press Start 2P', monospace;
+  font-size: 8px;
+  letter-spacing: 1px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s;
+  white-space: nowrap;
+  z-index: 2;
+}
+.group:hover .canvas-set-primary-btn { opacity: 1; }
+.canvas-set-primary-btn:hover {
+  background: #F5C34B;
+  color: #2D2515;
+}
+
 .canvas-delete-btn {
   position: absolute;
   top: 8px;

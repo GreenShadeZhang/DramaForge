@@ -421,6 +421,7 @@ async def upload_global_asset(
     file: UploadFile = File(...),
     name: str = Form(""),
     asset_type: str = Form("character"),
+    create_record: bool = Form(True),
     user: CurrentUser = None,
     db: AsyncSession = Depends(get_db),
 ):
@@ -449,26 +450,28 @@ async def upload_global_asset(
     file_path.write_bytes(content)
     url = storage_service.get_url(str(file_path))
 
-    # Create character or scene record
-    display_name = name.strip() or file.filename.rsplit(".", 1)[0]
-    if asset_type == "scene":
-        asset = SceneLocation(
-            project_id=project_id,
-            name=display_name,
-            reference_images=[url],
-        )
-    else:
-        asset = Character(
-            project_id=project_id,
-            name=display_name,
-            role=CharacterRole.EXTRA,
-            reference_images=[url],
-        )
-    db.add(asset)
-    await db.flush()
-    await db.refresh(asset)
+    # Optionally create character or scene record
+    if create_record:
+        display_name = name.strip() or file.filename.rsplit(".", 1)[0]
+        if asset_type == "scene":
+            asset = SceneLocation(
+                project_id=project_id,
+                name=display_name,
+                reference_images=[url],
+            )
+        else:
+            asset = Character(
+                project_id=project_id,
+                name=display_name,
+                role=CharacterRole.EXTRA,
+                reference_images=[url],
+            )
+        db.add(asset)
+        await db.flush()
+        await db.refresh(asset)
+        return {"id": asset.id, "name": display_name, "url": url, "type": asset_type}
 
-    return {"id": asset.id, "name": display_name, "url": url, "type": asset_type}
+    return {"id": 0, "name": file.filename or "upload", "url": url, "type": asset_type}
 
 
 @router.delete("/assets/{asset_id}", status_code=204)

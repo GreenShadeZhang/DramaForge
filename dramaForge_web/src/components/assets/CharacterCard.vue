@@ -16,7 +16,12 @@ const emit = defineEmits<{
   openGallery: [CharacterDetail]
 }>()
 
-const mainImage = computed(() => props.character.reference_images?.[0]?.url)
+const mainImage = computed(() => {
+  const imgs = props.character.reference_images || []
+  if (!imgs.length) return null
+  const primary = imgs.find(img => img.is_primary)
+  return primary?.url || imgs[0]?.url
+})
 const imageCount = computed(() => props.character.reference_images?.length || 0)
 </script>
 

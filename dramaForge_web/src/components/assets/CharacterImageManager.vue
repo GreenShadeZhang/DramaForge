@@ -51,7 +51,7 @@ async function handleFile(e: Event) {
   uploading.value = true
   try {
     const fd = new FormData(); fd.append('file', file)
-    const { data } = await assetsApi.uploadAsset(fd)
+    const { data } = await assetsApi.uploadAsset(projectId, fd)
     if (data?.url) {
       images.value = [...images.value, { url: data.url, name: file.name.replace(/\.[^.]+$/, '') }]
       await saveToBackend()

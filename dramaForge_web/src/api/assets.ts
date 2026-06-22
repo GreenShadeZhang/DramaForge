@@ -68,7 +68,9 @@ export const assetsApi = {
   },
 
   /** 上传资产文件 */
-  uploadAsset(formData: FormData) {
+  uploadAsset(projectId: number, formData: FormData, createRecord = true) {
+    formData.append('project_id', String(projectId))
+    if (!createRecord) formData.append('create_record', 'false')
     return api.post<{ id: number; name: string; url: string }>('/assets/upload', formData, {
       headers: { 'Content-Type': 'multipart/form-data' },
     })

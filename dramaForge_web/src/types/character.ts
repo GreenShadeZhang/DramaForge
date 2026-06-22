@@ -4,6 +4,7 @@ import type { CharacterRole } from './enums'
 export interface RefImage {
   url: string
   name: string
+  is_primary?: boolean
 }
 
 export interface CharacterDetail {

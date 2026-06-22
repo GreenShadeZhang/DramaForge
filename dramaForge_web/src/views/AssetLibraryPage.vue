@@ -116,7 +116,7 @@ async function onAssetFileSelected(e: Event) {
   fd.append('asset_type', 'character')
 
   try {
-    await assetsApi.uploadAsset(fd)
+    await assetsApi.uploadAsset(projectId, fd)
     await handleRefresh()
   } catch (e: any) {
     alert('上传失败，请重试')
