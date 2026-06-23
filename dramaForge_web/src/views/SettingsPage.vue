@@ -55,6 +55,12 @@ const providerForm = ref({
   priority: 0,
   enabled: true,
   model_ids: '',
+  video_first_frame: false,
+  video_multi_reference: false,
+  video_max_reference_images: 3,
+  video_role_character: false,
+  video_role_scene: false,
+  video_role_style: false,
 })
 
 const filteredProviders = computed(() =>
@@ -102,11 +108,19 @@ function openAddProvider() {
     priority: 0,
     enabled: true,
     model_ids: '',
+    video_first_frame: false,
+    video_multi_reference: false,
+    video_max_reference_images: 3,
+    video_role_character: false,
+    video_role_scene: false,
+    video_role_style: false,
   }
   showProviderForm.value = true
 }
 
 function openEditProvider(provider: ProviderConfig) {
+  const firstModel = modelsForCapability(provider, activeCapability.value)[0]
+  const caps = firstModel?.capabilities_json || {}
   editingProvider.value = provider
   testResult.value = null
   providerForm.value = {
@@ -118,8 +132,32 @@ function openEditProvider(provider: ProviderConfig) {
     priority: provider.priority,
     enabled: provider.enabled,
     model_ids: modelsForCapability(provider, activeCapability.value).map((model) => model.model_id).join('\n'),
+    video_first_frame: Boolean(caps.video_first_frame),
+    video_multi_reference: Boolean(caps.video_multi_reference || caps.video_reference_images),
+    video_max_reference_images: Number(caps.video_max_reference_images || 3),
+    video_role_character: Array.isArray(caps.video_reference_roles) ? caps.video_reference_roles.includes('character') : false,
+    video_role_scene: Array.isArray(caps.video_reference_roles) ? caps.video_reference_roles.includes('scene') : false,
+    video_role_style: Array.isArray(caps.video_reference_roles) ? caps.video_reference_roles.includes('style') : false,
   }
   showProviderForm.value = true
+}
+
+function videoCapabilities() {
+  if (activeCapability.value !== 'video') return {}
+  const roles = [
+    providerForm.value.video_role_character ? 'character' : '',
+    providerForm.value.video_role_scene ? 'scene' : '',
+    providerForm.value.video_role_style ? 'style' : '',
+  ].filter(Boolean)
+  const supportsReference = providerForm.value.video_first_frame || providerForm.value.video_multi_reference
+  if (!supportsReference) return {}
+  return {
+    video_reference_images: providerForm.value.video_multi_reference,
+    video_first_frame: providerForm.value.video_first_frame,
+    video_multi_reference: providerForm.value.video_multi_reference,
+    video_max_reference_images: Number(providerForm.value.video_max_reference_images) || 1,
+    video_reference_roles: roles.length ? roles : ['character', 'scene'],
+  }
 }
 
 async function saveProvider() {
@@ -147,6 +185,7 @@ async function saveProvider() {
       ? await aiStore.updateProvider(editingProvider.value.id, payload)
       : await aiStore.addProvider(payload)
 
+    const capabilities = videoCapabilities()
     const existing = new Set(modelsForCapability(provider, activeCapability.value).map((model) => model.model_id))
     for (const modelId of modelIds) {
       if (existing.has(modelId)) continue
@@ -156,9 +195,15 @@ async function saveProvider() {
         display_name: modelId,
         is_default: modelIds.length === 1 && !aiStore.defaults[activeCapability.value],
         default_params_json: {},
-        capabilities_json: {},
+        capabilities_json: capabilities,
         param_schema_json: {},
       })
+    }
+    if (activeCapability.value === 'video') {
+      const currentModels = modelsForCapability(provider, 'video').filter((model) => modelIds.includes(model.model_id))
+      for (const model of currentModels) {
+        await aiStore.updateModel(model.id, { capabilities_json: capabilities })
+      }
     }
 
     showProviderForm.value = false
@@ -336,6 +381,30 @@ function decreasePriority() {
                 />
               </label>
 
+              <div v-if="activeCapability === 'video'" class="form-row video-capability-row">
+                <span>参考图能力</span>
+                <div class="video-capability-box">
+                  <label class="switch-row">
+                    <input v-model="providerForm.video_first_frame" type="checkbox" />
+                    <span>支持首帧图</span>
+                  </label>
+                  <label class="switch-row">
+                    <input v-model="providerForm.video_multi_reference" type="checkbox" />
+                    <span>支持多参考图</span>
+                  </label>
+                  <label class="inline-field">
+                    <span>最大参考图</span>
+                    <input v-model.number="providerForm.video_max_reference_images" type="number" min="1" max="8" />
+                  </label>
+                  <div class="role-checks">
+                    <label><input v-model="providerForm.video_role_character" type="checkbox" /> 角色</label>
+                    <label><input v-model="providerForm.video_role_scene" type="checkbox" /> 场景</label>
+                    <label><input v-model="providerForm.video_role_style" type="checkbox" /> 风格</label>
+                  </div>
+                  <small>自定义视频模型默认不启用参考图；确认供应商支持后再开启。</small>
+                </div>
+              </div>
+
               <label class="form-row form-row-required">
                 <span>接口地址</span>
                 <input v-model="providerForm.base_url" placeholder="http://api.lingguoai.com/v1" />
@@ -426,6 +495,43 @@ function decreasePriority() {
 
 .service-header-actions {
   gap: 14px;
+}
+
+.video-capability-row {
+  align-items: flex-start;
+}
+
+.video-capability-box {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid #e5e6eb;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.5);
+}
+
+.inline-field,
+.role-checks {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: #4b5563;
+  font-size: 12px;
+}
+
+.inline-field input {
+  width: 70px;
+  height: 28px;
+  padding: 0 8px;
+  border: 1px solid #d1d5db;
+  border-radius: 5px;
+  background: #fff;
+}
+
+.role-checks label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
 }
 
 .service-text-button {

@@ -42,6 +42,7 @@ export const SegmentStatus = {
   PENDING: 'pending',
   GENERATING: 'generating',
   COMPLETED: 'completed',
+  PARTIAL: 'partial',
   FAILED: 'failed',
 } as const
 export type SegmentStatus = typeof SegmentStatus[keyof typeof SegmentStatus]
@@ -110,6 +111,7 @@ export const SegmentStatusLabel: Record<SegmentStatus, string> = {
   [SegmentStatus.PENDING]: '待生成',
   [SegmentStatus.GENERATING]: '生成中',
   [SegmentStatus.COMPLETED]: '已完成',
+  [SegmentStatus.PARTIAL]: '部分完成',
   [SegmentStatus.FAILED]: '失败',
 }
 

@@ -19,9 +19,9 @@ const saving = ref(false)
 const uploading = ref(false)
 const fileInput = ref<HTMLInputElement | null>(null)
 
-watch(() => [props.visible, props.character], ([v, c]) => {
-  if (v && c) {
-    images.value = (c.reference_images || []).map(img => {
+watch([() => props.visible, () => props.character], ([visible, character]) => {
+  if (visible && character) {
+    images.value = (character.reference_images || []).map(img => {
       // Support legacy string format
       if (typeof img === 'string') return { url: img, name: '' }
       return { ...img }
@@ -47,11 +47,11 @@ function triggerUpload() {
 
 async function handleFile(e: Event) {
   const file = (e.target as HTMLInputElement).files?.[0]
-  if (!file) return
+  if (!file || !props.character) return
   uploading.value = true
   try {
     const fd = new FormData(); fd.append('file', file)
-    const { data } = await assetsApi.uploadAsset(projectId, fd)
+    const { data } = await assetsApi.uploadAsset(props.character.project_id, fd)
     if (data?.url) {
       images.value = [...images.value, { url: data.url, name: file.name.replace(/\.[^.]+$/, '') }]
       await saveToBackend()

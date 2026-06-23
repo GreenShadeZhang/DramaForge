@@ -68,10 +68,13 @@ class Shot(Base):
     # Dialogue & Audio
     dialogue: Mapped[Optional[str]] = mapped_column(Text, default="")
     voice_style: Mapped[Optional[str]] = mapped_column(String(100), default="")
+    emotion: Mapped[Optional[str]] = mapped_column(Text, default="")
+    narration: Mapped[Optional[str]] = mapped_column(Text, default="")
 
     # Visuals
     background: Mapped[Optional[str]] = mapped_column(Text, default="")
     transition: Mapped[Optional[str]] = mapped_column(String(50), default="cut")
+    visual_references: Mapped[Optional[list]] = mapped_column(JSON, nullable=False, default=list)
 
     # AI Prompts
     image_prompt: Mapped[Optional[str]] = mapped_column(Text, default="")

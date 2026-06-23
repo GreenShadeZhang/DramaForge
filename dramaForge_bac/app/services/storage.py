@@ -61,6 +61,18 @@ class StorageService:
         p.mkdir(parents=True, exist_ok=True)
         return p / f"segment_{seg_idx:04d}.mp4"
 
+    def shot_video_path(
+        self, project_id: int, ep_num: int, seg_idx: int, shot_idx: int
+    ) -> Path:
+        p = (
+            self.project_path(project_id)
+            / f"ep{ep_num:03d}"
+            / "segments"
+            / f"segment_{seg_idx:04d}_shots"
+        )
+        p.mkdir(parents=True, exist_ok=True)
+        return p / f"shot_{shot_idx:04d}.mp4"
+
     def episode_video_path(
         self, project_id: int, ep_num: int
     ) -> Path:

@@ -3,6 +3,8 @@ import { ref, computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useProjectStore } from '@/stores/project'
 import { episodesApi } from '@/api/episodes'
+import { storyboardApi } from '@/api/storyboard'
+import type { StoryboardGenerationStatus } from '@/api/storyboard'
 import type { EpisodeOverview } from '@/types/episode'
 import { ProjectStep } from '@/types/enums'
 import EmptyState from '@/components/common/EmptyState.vue'
@@ -39,7 +41,10 @@ const totalSegments = computed(() =>
   episodes.value.reduce((sum, ep) => sum + (ep.segment_count || 0), 0)
 )
 
-const regeneratingEpId = ref<number | null>(null)
+const generatingStoryboardEpId = ref<number | null>(null)
+const regeneratingStoryboardEpId = ref<number | null>(null)
+const downloadingEpId = ref<number | null>(null)
+const storyboardProgress = ref<Record<number, StoryboardGenerationStatus>>({})
 
 function goBackToAssets() {
   if (projectStore.currentProject) {
@@ -48,22 +53,115 @@ function goBackToAssets() {
   router.push(`/projects/${projectId}/assets`)
 }
 
-function handleExportEpisode(epId: number) {
-  router.push(`/projects/${projectId}/episodes/${epId}/storyboard`)
+function hasStoryboard(ep: EpisodeOverview) {
+  return ep.segment_count > 0
 }
 
-async function handleRegenerateEpisode(epId: number) {
-  if (!window.confirm('确定要 AI 重新生成本集内容吗？已有分镜和素材数据将保留。')) return
-  regeneratingEpId.value = epId
+function isStoryboardGenerating(ep: EpisodeOverview) {
+  const progress = storyboardProgress.value[ep.id]
+  return generatingStoryboardEpId.value === ep.id
+    || regeneratingStoryboardEpId.value === ep.id
+    || progress?.status === 'generating'
+}
+
+function storyboardGeneratingLabel(ep: EpisodeOverview) {
+  const progress = storyboardProgress.value[ep.id]
+  if (progress?.status === 'generating' && progress.message) return progress.message
+  if (regeneratingStoryboardEpId.value === ep.id) return '重新生成分镜中'
+  if (generatingStoryboardEpId.value === ep.id) return '分镜生成中'
+  return ''
+}
+
+function storyboardProgressValue(ep: EpisodeOverview) {
+  return storyboardProgress.value[ep.id]?.progress ?? (isStoryboardGenerating(ep) ? 5 : 0)
+}
+
+function setStoryboardProgress(epId: number, status: StoryboardGenerationStatus) {
+  storyboardProgress.value = {
+    ...storyboardProgress.value,
+    [epId]: status,
+  }
+}
+
+async function refreshEpisodes() {
+  const { data } = await episodesApi.list(projectId)
+  episodes.value = data
+}
+
+function delay(ms: number) {
+  return new Promise(resolve => setTimeout(resolve, ms))
+}
+
+async function waitForStoryboardRefresh(epId: number) {
+  for (let attempt = 0; attempt < 120; attempt += 1) {
+    await delay(1500)
+    const { data: status } = await storyboardApi.getGenerationStatus(projectId, epId)
+    setStoryboardProgress(epId, status)
+    if (status.status === 'failed') {
+      throw new Error(status.message || '分镜生成失败')
+    }
+    await refreshEpisodes()
+    const episode = episodes.value.find(item => item.id === epId)
+    if (status.status === 'completed' || (episode && episode.segment_count > 0)) return
+  }
+}
+
+async function handleGenerateStoryboard(epId: number) {
+  generatingStoryboardEpId.value = epId
+  setStoryboardProgress(epId, {
+    status: 'generating',
+    progress: 1,
+    message: '分镜任务提交中',
+  })
   try {
-    await episodesApi.regenerate(projectId, epId)
-    // Refresh list
-    const { data } = await episodesApi.list(projectId)
-    episodes.value = data
+    await storyboardApi.generate(projectId, epId)
+    await waitForStoryboardRefresh(epId)
   } catch (e: any) {
-    alert(e?.response?.data?.detail || '重新生成失败')
+    setStoryboardProgress(epId, {
+      status: 'failed',
+      progress: 100,
+      message: e?.response?.data?.detail || e?.message || '分镜生成失败',
+    })
+    alert(e?.response?.data?.detail || e?.message || '分镜生成失败')
   } finally {
-    regeneratingEpId.value = null
+    generatingStoryboardEpId.value = null
+  }
+}
+
+async function handleRegenerateStoryboard(ep: EpisodeOverview) {
+  const confirmed = window.confirm('重新生成会删除当前剧集已有分镜内容，并重新生成新的分镜。确定继续吗？')
+  if (!confirmed) return
+
+  regeneratingStoryboardEpId.value = ep.id
+  setStoryboardProgress(ep.id, {
+    status: 'generating',
+    progress: 1,
+    message: '重新生成任务提交中',
+  })
+  try {
+    await storyboardApi.generate(projectId, ep.id, { force: true })
+    await refreshEpisodes()
+    await waitForStoryboardRefresh(ep.id)
+  } catch (e: any) {
+    setStoryboardProgress(ep.id, {
+      status: 'failed',
+      progress: 100,
+      message: e?.response?.data?.detail || e?.message || '重新生成分镜失败',
+    })
+    alert(e?.response?.data?.detail || e?.message || '重新生成分镜失败')
+  } finally {
+    regeneratingStoryboardEpId.value = null
+  }
+}
+
+async function handleDownloadEpisode(epId: number) {
+  downloadingEpId.value = epId
+  try {
+    await storyboardApi.downloadEpisode(projectId, epId)
+  } catch (e: any) {
+    alert(e?.message || '下载失败')
+  } finally {
+    downloadingEpId.value = null
   }
 }
 
@@ -212,7 +310,8 @@ function getThumbnailGradient(index: number) {
         v-for="(ep, idx) in episodes"
         :key="ep.id"
         class="episode-card"
-        @click="router.push(`/projects/${projectId}/episodes/${ep.id}/storyboard`)"
+        :class="{ 'episode-card--generating': isStoryboardGenerating(ep) }"
+        @click="hasStoryboard(ep) && !isStoryboardGenerating(ep) && router.push(`/projects/${projectId}/episodes/${ep.id}/storyboard`)"
       >
         <!-- Thumbnail -->
         <div class="card-thumb" :style="{ background: getThumbnailGradient(idx) }">
@@ -236,6 +335,10 @@ function getThumbnailGradient(index: number) {
               <path d="M2.5 6l2.5 2.5 4.5-5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
             </svg>
           </span>
+          <div v-if="isStoryboardGenerating(ep)" class="thumb-generating">
+            <div class="mini-spinner" />
+            <span>{{ storyboardGeneratingLabel(ep) }}</span>
+          </div>
         </div>
 
         <!-- Info -->
@@ -244,6 +347,10 @@ function getThumbnailGradient(index: number) {
             <h3 class="card-title">
               第 {{ ep.number }} 集：{{ ep.title || '无标题' }}
             </h3>
+            <span v-if="isStoryboardGenerating(ep)" class="card-status-pill">
+              <span class="mini-dot" />
+              {{ storyboardGeneratingLabel(ep) }}
+            </span>
           </div>
 
           <!-- Stats -->
@@ -274,40 +381,25 @@ function getThumbnailGradient(index: number) {
             </div>
           </div>
 
+          <div v-if="isStoryboardGenerating(ep)" class="card-progress">
+            <div class="card-progress-head">
+              <span>{{ storyboardGeneratingLabel(ep) }}</span>
+              <strong>{{ storyboardProgressValue(ep) }}%</strong>
+            </div>
+            <div class="card-progress-track">
+              <span :style="{ width: `${storyboardProgressValue(ep)}%` }" />
+            </div>
+          </div>
+
           <!-- Actions -->
           <div class="card-actions">
             <button
+              v-if="!hasStoryboard(ep)"
               class="action-btn action-btn--ghost"
-              @click.stop="router.push(`/projects/${projectId}/episodes/${ep.id}/storyboard`)"
+              :disabled="isStoryboardGenerating(ep)"
+              @click.stop="handleGenerateStoryboard(ep.id)"
             >
-              <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-                <polygon points="4.5,2.5 4.5,11.5 11,7" fill="currentColor"/>
-              </svg>
-              预览
-            </button>
-            <button
-              class="action-btn action-btn--outline"
-              @click.stop="router.push(`/projects/${projectId}/episodes/${ep.id}/storyboard`)"
-            >
-              <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-                <path d="M9.5 1.5l3 3-7 7H2.5v-3l7-7z" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
-              </svg>
-              编辑
-            </button>
-            <button class="action-btn action-btn--primary" @click.stop="handleExportEpisode(ep.id)">
-              <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-                <path d="M7 1.5v8M4 6.5l3 3 3-3" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
-                <path d="M2 11.5h10" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
-              </svg>
-              导出
-            </button>
-            <button
-              class="action-btn action-btn--ghost"
-              :disabled="regeneratingEpId === ep.id"
-              @click.stop="handleRegenerateEpisode(ep.id)"
-              title="AI 重新生成本集内容"
-            >
-              <svg v-if="regeneratingEpId === ep.id" class="animate-spin" width="14" height="14" viewBox="0 0 14 14" fill="none">
+              <svg v-if="isStoryboardGenerating(ep)" class="animate-spin" width="14" height="14" viewBox="0 0 14 14" fill="none">
                 <circle cx="7" cy="7" r="5.5" stroke="currentColor" stroke-width="1.5" opacity="0.3"/>
                 <path d="M7 1.5a5.5 5.5 0 015.1 3.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
               </svg>
@@ -316,13 +408,64 @@ function getThumbnailGradient(index: number) {
                 <path d="M4.8 1l.8 2.5" stroke="currentColor" stroke-width="1.2"/>
                 <path d="M10.5 4.5l2-1M8.5 8.5l2 3.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
               </svg>
-              {{ regeneratingEpId === ep.id ? '生成中...' : '分镜生成' }}
+              {{ isStoryboardGenerating(ep) ? storyboardGeneratingLabel(ep) : '分镜生成' }}
             </button>
-          </div>
+            <button
+              v-if="hasStoryboard(ep) && !isStoryboardGenerating(ep)"
+              class="action-btn action-btn--ghost"
+              @click.stop="router.push(`/projects/${projectId}/episodes/${ep.id}/storyboard`)"
+            >
+              <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                <polygon points="4.5,2.5 4.5,11.5 11,7" fill="currentColor"/>
+              </svg>
+              查看视频
+            </button>
+            <button
+              v-if="hasStoryboard(ep)"
+              class="action-btn action-btn--outline"
+              :disabled="isStoryboardGenerating(ep)"
+              @click.stop="router.push(`/projects/${projectId}/episodes/${ep.id}/storyboard`)"
+            >
+              <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                <path d="M9.5 1.5l3 3-7 7H2.5v-3l7-7z" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+              编辑
+            </button>
+            <button
+              v-if="hasStoryboard(ep)"
+              class="action-btn action-btn--outline action-btn--warn"
+              :disabled="isStoryboardGenerating(ep)"
+              @click.stop="handleRegenerateStoryboard(ep)"
+            >
+              <svg v-if="isStoryboardGenerating(ep)" class="animate-spin" width="14" height="14" viewBox="0 0 14 14" fill="none">
+                <circle cx="7" cy="7" r="5.5" stroke="currentColor" stroke-width="1.5" opacity="0.3"/>
+                <path d="M7 1.5a5.5 5.5 0 015.1 3.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+              </svg>
+              <svg v-else width="14" height="14" viewBox="0 0 14 14" fill="none">
+                <path d="M11.5 5.5A4.5 4.5 0 104.6 9.3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
+                <path d="M11.5 2v3.5H8" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+                <path d="M2.5 8.5A4.5 4.5 0 009.4 4.7" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
+                <path d="M2.5 12V8.5H6" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+              {{ isStoryboardGenerating(ep) ? storyboardGeneratingLabel(ep) : '重生成分镜' }}
+            </button>
+            <button
+              v-if="hasStoryboard(ep) && !isStoryboardGenerating(ep)"
+              class="action-btn action-btn--primary"
+              :disabled="downloadingEpId === ep.id"
+              @click.stop="handleDownloadEpisode(ep.id)"
+            >
+              <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                <path d="M7 1.5v8M4 6.5l3 3 3-3" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+                <path d="M2 11.5h10" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+              </svg>
+              {{ downloadingEpId === ep.id ? '下载中...' : '下载视频' }}
+            </button>
         </div>
       </div>
     </div>
 
+    </div>
     <!-- ═══ Bottom Bar ═══ -->
     <div v-if="episodes.length" class="bottom-bar">
       <div class="bottom-hint">
@@ -512,6 +655,11 @@ function getThumbnailGradient(index: number) {
   to { transform: rotate(360deg); }
 }
 
+@keyframes pulse {
+  0%, 100% { opacity: 0.35; }
+  50% { opacity: 1; }
+}
+
 .loading-text {
   font-size: 14px;
   color: #bbb;
@@ -544,6 +692,16 @@ function getThumbnailGradient(index: number) {
   border-color: #e0d5f5;
   box-shadow: 0 4px 20px rgba(232, 163, 23, 0.08);
   transform: translateY(-1px);
+}
+
+.episode-card--generating {
+  cursor: default;
+  border-color: rgba(232, 163, 23, 0.45);
+  box-shadow: 0 0 0 2px rgba(232, 163, 23, 0.08);
+}
+
+.episode-card--generating:hover {
+  transform: none;
 }
 
 /* ── Thumbnail ── */
@@ -612,6 +770,31 @@ function getThumbnailGradient(index: number) {
   backdrop-filter: blur(4px);
 }
 
+.thumb-generating {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  background: rgba(45, 37, 21, 0.42);
+  color: #fff7db;
+  font-size: 12px;
+  font-weight: 700;
+  text-align: center;
+  backdrop-filter: blur(2px);
+}
+
+.mini-spinner {
+  width: 22px;
+  height: 22px;
+  border: 2px solid rgba(255, 247, 219, 0.5);
+  border-top-color: #fff7db;
+  border-radius: 50%;
+  animation: spin 0.75s linear infinite;
+}
+
 /* ── Card Body ── */
 .card-body {
   flex: 1;
@@ -639,6 +822,29 @@ function getThumbnailGradient(index: number) {
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
+}
+
+.card-status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  height: 24px;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: rgba(232, 163, 23, 0.14);
+  color: #9a5b00;
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.mini-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #E8A317;
+  animation: pulse 1s ease-in-out infinite;
 }
 
 /* ── Stats Pills ── */
@@ -674,12 +880,61 @@ function getThumbnailGradient(index: number) {
   color: #555;
 }
 
+.card-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  margin-top: 12px;
+  min-width: 0;
+}
+
+.card-progress-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+  color: #7b5a12;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.card-progress-head span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.card-progress-head strong {
+  flex: 0 0 auto;
+  color: #2D2515;
+  font-variant-numeric: tabular-nums;
+}
+
+.card-progress-track {
+  height: 6px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(168, 130, 60, 0.22);
+}
+
+.card-progress-track span {
+  display: block;
+  height: 100%;
+  min-width: 8px;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #E8A317 0%, #2D2515 100%);
+  transition: width 0.25s ease;
+}
+
 /* ── Card Actions ── */
 .card-actions {
   display: flex;
   align-items: center;
   gap: 8px;
   margin-top: 14px;
+  flex-wrap: wrap;
 }
 
 .action-btn {
@@ -717,6 +972,16 @@ function getThumbnailGradient(index: number) {
   color: #333;
 }
 
+.action-btn--warn {
+  color: #9a5b00;
+  border-color: rgba(232, 163, 23, 0.38);
+}
+.action-btn--warn:hover {
+  background: #FFF4C6;
+  border-color: #E8A317;
+  color: #6f4200;
+}
+
 .action-btn--primary {
   background: #2D2515;
   color: #FFFFFF;
@@ -724,6 +989,13 @@ function getThumbnailGradient(index: number) {
 .action-btn--primary:hover {
   background: #333;
   box-shadow: 0 2px 6px rgba(0,0,0,0.15);
+}
+
+.action-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
 }
 
 /* ═══ Bottom Bar ═══ */

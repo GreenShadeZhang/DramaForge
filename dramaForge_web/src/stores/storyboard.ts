@@ -10,7 +10,9 @@ export const useStoryboardStore = defineStore('storyboard', () => {
   const storyboard = ref<StoryboardDetail | null>(null)
   const currentSegmentIndex = ref(0)
   const currentShotIndex = ref(0)
+  const previewTarget = ref<'segment' | 'shot'>('shot')
   const loading = ref(false)
+  const generatingStoryboard = ref(false)
 
   // ── Undo/Redo (P2-5) ──
   const undoStack = ref<Partial<ShotDetail>[]>([])
@@ -32,10 +34,16 @@ export const useStoryboardStore = defineStore('storyboard', () => {
   async function fetchStoryboard(projectId: number, episodeId: number) {
     loading.value = true
     try {
+      const prevSegmentIndex = currentSegmentIndex.value
+      const prevShotIndex = currentShotIndex.value
       const { data } = await storyboardApi.get(projectId, episodeId)
       storyboard.value = data
-      currentSegmentIndex.value = 0
-      currentShotIndex.value = 0
+      // Restore segment index within valid bounds
+      const maxIndex = Math.max(0, (data.segments?.length || 1) - 1)
+      currentSegmentIndex.value = Math.min(prevSegmentIndex, maxIndex)
+      const currentShots = data.segments?.[currentSegmentIndex.value]?.shots || []
+      const maxShotIndex = Math.max(0, currentShots.length - 1)
+      currentShotIndex.value = Math.min(prevShotIndex, maxShotIndex)
       undoStack.value = []
       redoStack.value = []
     } finally {
@@ -44,18 +52,29 @@ export const useStoryboardStore = defineStore('storyboard', () => {
   }
 
   async function generateStoryboard(projectId: number, episodeId: number) {
-    loading.value = true
+    generatingStoryboard.value = true
     try {
-      const { data } = await storyboardApi.generate(projectId, episodeId)
-      storyboard.value = data
-    } finally {
-      loading.value = false
+      await storyboardApi.generate(projectId, episodeId)
+      // API now returns immediately; polling will pick up the result
+    } catch (e: any) {
+      generatingStoryboard.value = false
+      throw e
     }
+  }
+
+  function onStoryboardGenerated() {
+    generatingStoryboard.value = false
   }
 
   function selectSegment(index: number) {
     currentSegmentIndex.value = index
     currentShotIndex.value = 0
+    previewTarget.value = 'segment'
+  }
+
+  function selectShot(index: number) {
+    currentShotIndex.value = index
+    previewTarget.value = 'shot'
   }
 
   // ── Undo/Redo actions (P2-5) ──
@@ -77,8 +96,11 @@ export const useStoryboardStore = defineStore('storyboard', () => {
       time_of_day: currentShot.value.time_of_day,
       duration: currentShot.value.duration,
       dialogue: currentShot.value.dialogue,
+      emotion: currentShot.value.emotion,
+      narration: currentShot.value.narration,
       scene_ref: currentShot.value.scene_ref,
       background: currentShot.value.background,
+      visual_references: currentShot.value.visual_references,
     })
     // Restore previous state
     await storyboardApi.updateShot(projectId, episodeId, currentShot.value.id, prev as any)
@@ -97,8 +119,11 @@ export const useStoryboardStore = defineStore('storyboard', () => {
       time_of_day: currentShot.value.time_of_day,
       duration: currentShot.value.duration,
       dialogue: currentShot.value.dialogue,
+      emotion: currentShot.value.emotion,
+      narration: currentShot.value.narration,
       scene_ref: currentShot.value.scene_ref,
       background: currentShot.value.background,
+      visual_references: currentShot.value.visual_references,
     })
     // Apply redo state
     await storyboardApi.updateShot(projectId, episodeId, currentShot.value.id, next as any)
@@ -109,16 +134,20 @@ export const useStoryboardStore = defineStore('storyboard', () => {
     storyboard,
     currentSegmentIndex,
     currentShotIndex,
+    previewTarget,
     currentSegment,
     currentShot,
     loading,
+    generatingStoryboard,
     undoStack,
     redoStack,
     canUndo,
     canRedo,
     fetchStoryboard,
     generateStoryboard,
+    onStoryboardGenerated,
     selectSegment,
+    selectShot,
     pushUndo,
     undo,
     redo,

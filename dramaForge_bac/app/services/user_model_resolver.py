@@ -28,6 +28,7 @@ class ResolvedModel:
     headers: dict | None = None
     config: dict | None = None
     raw_params: dict | None = None
+    capabilities: dict | None = None
     provider_id: int | None = None
 
 
@@ -99,6 +100,32 @@ class UserModelResolver:
 
         return None
 
+    async def resolve_provider_model_by_id(
+        self,
+        db: AsyncSession,
+        user_id: int,
+        model_config_id: int,
+        capability_type: str,
+    ) -> ResolvedModel | None:
+        capability = MediaCapability((capability_type or "").strip().lower())
+        stmt = (
+            select(AIModelConfig, AIProviderConfig)
+            .join(AIProviderConfig, AIModelConfig.provider_id == AIProviderConfig.id)
+            .where(
+                AIProviderConfig.user_id == user_id,
+                AIProviderConfig.enabled == True,
+                AIModelConfig.enabled == True,
+                AIModelConfig.capability == capability,
+                AIModelConfig.id == model_config_id,
+            )
+        )
+        result = await db.execute(stmt)
+        row = result.first()
+        if not row:
+            return None
+        model, provider = row
+        return self._to_resolved_media(model, provider)
+
     def _fallback_media_model(self, capability_type: str) -> ResolvedModel:
         fallback_model = settings.image_model if capability_type == "image" else settings.video_model
         return ResolvedModel(
@@ -110,6 +137,7 @@ class UserModelResolver:
             headers={},
             config={},
             raw_params={},
+            capabilities={},
         )
 
     def _to_resolved_media(
@@ -126,6 +154,7 @@ class UserModelResolver:
             headers=provider.headers_json or {},
             config=provider.config_json or {},
             raw_params=model.default_params_json or {},
+            capabilities=model.capabilities_json or {},
             provider_id=provider.id,
         )
 

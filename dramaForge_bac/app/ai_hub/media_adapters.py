@@ -73,6 +73,11 @@ def _extract_urls(text: str, extensions: str = r"png|jpg|jpeg|webp|gif|mp4|mov|w
     return list(dict.fromkeys(markdown + bare))
 
 
+def _is_seedance_model(model_id: str | None) -> bool:
+    """Check if the model is a SeeDance (火山引擎) model that doesn't support aspect_ratio."""
+    return bool(model_id and model_id.startswith("seedance"))
+
+
 class BaseMediaAdapter:
     """Base adapter with shared HTTP helpers and result downloading."""
 
@@ -214,11 +219,30 @@ class OpenAICompatibleAdapter(BaseMediaAdapter):
                 ) from image_error
 
     async def submit_video(self, request: MediaRequest) -> MediaResult:
-        payload = {"model": request.model_id, "prompt": request.prompt, **request.raw_params}
-        if request.size or request.resolution:
-            payload["size"] = request.size or request.resolution
-        if request.duration is not None:
-            payload["seconds"] = str(request.duration)
+        raw_params = dict(request.raw_params or {})
+        raw_seconds = raw_params.pop("seconds", None)
+        raw_duration = raw_params.pop("duration", None)
+        raw_size = raw_params.pop("size", None)
+        raw_resolution = raw_params.pop("resolution", None)
+        raw_aspect_ratio = raw_params.pop("aspect_ratio", None)
+        video_error: MediaAdapterError | None = None
+
+        payload = {"model": request.model_id, "prompt": request.prompt, **raw_params}
+        effective_size = request.size or request.resolution or raw_size or raw_resolution
+        if effective_size:
+            payload["size"] = effective_size
+        effective_aspect = request.aspect_ratio or raw_aspect_ratio
+        if effective_aspect:
+            if _is_seedance_model(request.model_id):
+                logger.info(
+                    f"OpenAI-compatible adapter: dropping aspect_ratio={effective_aspect} "
+                    f"for model={request.model_id} (SeeDance does not support aspect_ratio)"
+                )
+            else:
+                payload.setdefault("aspect_ratio", effective_aspect)
+        effective_seconds = request.duration or raw_seconds or raw_duration
+        if effective_seconds is not None:
+            payload["seconds"] = str(effective_seconds)
         if request.first_frame:
             payload["input_reference"] = {"image_url": request.first_frame}
         try:
@@ -230,12 +254,15 @@ class OpenAICompatibleAdapter(BaseMediaAdapter):
             urls = _urls_from_any(data)
             if urls:
                 return MediaResult(status="succeeded", assets=[{"type": "video", "url": urls[0]}], response=data)
-        except MediaAdapterError as video_error:
-            # Don't fallback to chat for auth errors
-            if "401" in str(video_error) or "403" in str(video_error):
+            raise MediaAdapterError(f"Video response did not contain a task id or video URL: {data}")
+        except MediaAdapterError as err:
+            video_error = err
+            if "401" in str(err) or "403" in str(err):
+                raise
+            if not self.settings.config.get("allow_video_chat_fallback"):
                 raise
             logger.warning(
-                f"Video API failed ({video_error}), falling back to chat → "
+                f"Video API failed ({err}), falling back to chat → "
                 f"POST {self._url('/chat/completions')}"
             )
         try:
@@ -251,7 +278,7 @@ class OpenAICompatibleAdapter(BaseMediaAdapter):
         except Exception as chat_error:
             raise MediaAdapterError(
                 f"Video generation failed — "
-                f"Video API error: {video_error if 'video_error' in dir() else 'unknown'}. "
+                f"Video API error: {video_error or 'unknown'}. "
                 f"Chat fallback error: {chat_error}"
             )
 
@@ -341,8 +368,17 @@ class FalAdapter(BaseMediaAdapter):
 
     async def _submit(self, request: MediaRequest, asset_type: str) -> MediaResult:
         payload = {"prompt": request.prompt, **request.raw_params}
-        if request.first_frame:
-            payload["image_url"] = request.first_frame
+        for key, value in {
+            "image_url": request.first_frame,
+            "aspect_ratio": request.aspect_ratio,
+            "resolution": request.resolution,
+            "duration": request.duration,
+            "fps": request.fps,
+            "seed": request.seed,
+            "quality": request.quality,
+        }.items():
+            if value not in (None, "", []):
+                payload[key] = value
         endpoint = self.settings.config.get("submit_path") or f"/{request.model_id}"
         data = await self._post(endpoint, payload)
         return _task_or_asset_result(data, asset_type)

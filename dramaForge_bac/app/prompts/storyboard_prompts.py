@@ -23,6 +23,18 @@ STORYBOARD_STRUCTURED_PROMPT = """将以下剧本内容拆解为分镜脚本。
 
 【每段分镜数量上限】{shots_per_segment}
 
+【标准片段内容结构】
+每个 segment 在内容设计上必须包含并贯彻以下三部分：
+1. 【基础设定】：画面风格和类型、场景、主要角色、声音规则。
+2. 【氛围与画质】：风格核心、视觉基调、画面质感。
+3. 【画面内容】：逐条分镜内容。
+
+写入 JSON 时不新增非约定字段，但必须把【基础设定】和【氛围与画质】折入每个 shot 的
+background、dialogue、voice_style、camera_type、camera_angle、camera_movement 中。
+【基础设定】和【氛围与画质】的具体内容必须根据本集剧本、角色描述、场景资产和剧情情绪动态推断。
+不得套用固定题材、固定美术风格、固定宗教/神话元素、固定声音规则或示例内容。
+如果剧本没有明确指定风格，也要从题材类型、时代背景、人物关系、冲突强度和可用资产中推断一个一致的视觉方案。
+
 请严格按照以下 JSON 格式输出：
 
 {{
@@ -31,7 +43,7 @@ STORYBOARD_STRUCTURED_PROMPT = """将以下剧本内容拆解为分镜脚本。
       "title": "片段标题（概括该段内容）",
       "shots": [
         {{
-          "duration": 5,
+          "duration": 8,
           "time_of_day": "day",
           "scene_ref": "@场景名",
           "camera_type": "medium",
@@ -54,7 +66,7 @@ STORYBOARD_STRUCTURED_PROMPT = """将以下剧本内容拆解为分镜脚本。
 }}
 
 字段说明：
-- duration: 镜头时长(秒), 3~15
+- duration: 镜头时长(秒), 只能填写 4、8、12 其中之一，不得输出其它数值
 - time_of_day: day/night/dawn/dusk
 - scene_ref: 使用 @场景名 引用可用场景
 - camera_type: close_up/medium/full/wide/extreme_close/over_shoulder/pov/aerial
@@ -65,10 +77,12 @@ STORYBOARD_STRUCTURED_PROMPT = """将以下剧本内容拆解为分镜脚本。
 
 要求：
 1. 每个 segment 包含 1~{shots_per_segment} 个 shots
-2. 总时长合理，覆盖完整剧情
+2. 总时长合理，覆盖完整剧情；每个 shot 的 duration 必须严格从 4、8、12 中选择
 3. 镜头类型和角度要有变化，增加视觉丰富度
 4. 对白要贴合原始剧本内容
-5. 运动镜头（非 static）用于情绪高潮或动作场景"""
+5. 运动镜头（非 static）用于情绪高潮或动作场景
+6. 每个 shot 的 background 必须能单独支撑视频生成，包含风格、场景、角色状态、构图、光影、质感和隐含情绪
+7. 每个 shot 的 voice_style 只描述声音设计，不写配乐，优先写环境音、动作声、回声、对白语气"""
 
 
 def build_storyboard_prompt(

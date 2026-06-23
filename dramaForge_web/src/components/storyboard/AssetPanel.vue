@@ -147,8 +147,10 @@ const totalAssets = computed(() => props.characters.length + props.scenes.length
 .asset-panel {
   width: 254px;
   flex-shrink: 0;
-  border-right: 1px solid #D4C898;
-  background: #f7f8fa;
+  border-right: 1px solid rgba(168, 130, 60, 0.32);
+  background:
+    linear-gradient(180deg, #fff6d9 0%, #f4e7c4 100%),
+    repeating-linear-gradient(0deg, rgba(93, 52, 12, 0.035) 0, rgba(93, 52, 12, 0.035) 1px, transparent 1px, transparent 10px);
   min-height: 0;
   overflow: hidden;
 }
@@ -179,7 +181,7 @@ const totalAssets = computed(() => props.characters.length + props.scenes.length
   position: relative;
   border: 0;
   background: transparent;
-  color: #8c8c8c;
+  color: #9a8050;
   font-size: 13px;
   font-weight: 600;
   line-height: 30px;
@@ -187,7 +189,7 @@ const totalAssets = computed(() => props.characters.length + props.scenes.length
 }
 
 .asset-scope-btn.active {
-  color: #111;
+  color: #2d2515;
 }
 
 .asset-scope-btn.active::after {
@@ -198,7 +200,7 @@ const totalAssets = computed(() => props.characters.length + props.scenes.length
   bottom: 2px;
   height: 2px;
   border-radius: 2px;
-  background: #111;
+  background: #2d2515;
 }
 
 .asset-scope-btn:disabled {
@@ -213,18 +215,18 @@ const totalAssets = computed(() => props.characters.length + props.scenes.length
   align-items: center;
   justify-content: center;
   border: 0;
-  border-radius: 50%;
-  background: #FDF5D6;
-  color: #333;
+  border-radius: 6px;
+  background: #fff7db;
+  color: #2d2515;
   cursor: pointer;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.08);
+  box-shadow: 0 1px 4px rgba(80, 47, 13, 0.1);
   transition: all 0.15s ease;
 }
 
 .asset-add-btn:hover {
-  color: #111;
+  color: #7a1f12;
   transform: translateY(-1px);
-  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.08);
+  box-shadow: 0 4px 10px rgba(80, 47, 13, 0.12);
 }
 
 .asset-type-row {
@@ -240,16 +242,17 @@ const totalAssets = computed(() => props.characters.length + props.scenes.length
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border-radius: 2px;
-  background: #FDF5D6;
-  color: #202124;
+  border: 1px solid rgba(168, 130, 60, 0.24);
+  border-radius: 6px;
+  background: rgba(255, 250, 232, 0.78);
+  color: #2d2515;
   font-size: 12px;
   font-weight: 600;
 }
 
 .asset-type.disabled {
-  color: #b6b6b6;
-  background: #f0f1f3;
+  color: #b9a980;
+  background: rgba(255, 255, 255, 0.32);
 }
 
 .asset-count-row {
@@ -257,7 +260,7 @@ const totalAssets = computed(() => props.characters.length + props.scenes.length
   align-items: center;
   justify-content: space-between;
   padding: 0 16px 8px;
-  color: #9a9a9a;
+  color: #8c7247;
   font-size: 11px;
   flex-shrink: 0;
 }
@@ -278,7 +281,7 @@ const totalAssets = computed(() => props.characters.length + props.scenes.length
   align-items: center;
   justify-content: space-between;
   height: 24px;
-  color: #595959;
+  color: #5d4a2a;
   font-size: 12px;
   font-weight: 700;
 }
@@ -305,7 +308,7 @@ const totalAssets = computed(() => props.characters.length + props.scenes.length
   align-items: stretch;
   min-width: 0;
   padding: 0;
-  border-radius: 2px;
+  border-radius: 8px;
 }
 
 .character-thumb,
@@ -313,19 +316,19 @@ const totalAssets = computed(() => props.characters.length + props.scenes.length
   position: relative;
   display: block;
   overflow: hidden;
-  background: #eceff3;
-  border: 1px solid transparent;
+  background: #eadfca;
+  border: 1px solid rgba(168, 130, 60, 0.16);
   transition: border-color 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease;
 }
 
 .character-thumb {
   aspect-ratio: 1 / 1;
-  border-radius: 2px;
+  border-radius: 8px;
 }
 
 .scene-thumb {
   aspect-ratio: 16 / 9;
-  border-radius: 2px;
+  border-radius: 8px;
 }
 
 .character-thumb img,
@@ -341,15 +344,15 @@ const totalAssets = computed(() => props.characters.length + props.scenes.length
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  color: #b0b6c2;
+  color: #b49b64;
 }
 
 .character-card:hover .character-thumb,
 .scene-card:hover .scene-thumb,
 .character-card.selected .character-thumb,
 .scene-card.selected .scene-thumb {
-  border-color: #111827;
-  box-shadow: 0 0 0 1px rgba(17, 24, 39, 0.18);
+  border-color: #2d2515;
+  box-shadow: 0 0 0 1px rgba(45, 37, 21, 0.18), 0 8px 18px rgba(80, 47, 13, 0.12);
 }
 
 .character-card.locked .character-thumb {
@@ -367,9 +370,9 @@ const totalAssets = computed(() => props.characters.length + props.scenes.length
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border-radius: 50%;
-  background: rgba(255, 255, 255, 0.88);
-  color: #808080;
+  border-radius: 6px;
+  background: rgba(255, 247, 219, 0.9);
+  color: #806a3b;
   opacity: 0;
   transition: opacity 0.15s ease, color 0.15s ease, background 0.15s ease;
 }
@@ -388,7 +391,7 @@ const totalAssets = computed(() => props.characters.length + props.scenes.length
   display: block;
   min-width: 0;
   padding: 6px 4px 0;
-  color: #3d3d3d;
+  color: #3f321e;
   font-size: 11px;
   line-height: 1.35;
   white-space: nowrap;
@@ -420,11 +423,11 @@ const totalAssets = computed(() => props.characters.length + props.scenes.length
   display: flex;
   align-items: center;
   justify-content: center;
-  border: 1px dashed #d7dbe1;
-  border-radius: 2px;
-  color: #a3a8b0;
+  border: 1px dashed rgba(168, 130, 60, 0.42);
+  border-radius: 8px;
+  color: #9a8050;
   font-size: 12px;
-  background: rgba(255, 255, 255, 0.56);
+  background: rgba(255, 250, 232, 0.48);
 }
 
 @media (hover: none) {

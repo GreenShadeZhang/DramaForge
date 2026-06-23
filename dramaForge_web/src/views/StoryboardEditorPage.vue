@@ -5,6 +5,7 @@ import { useStoryboardStore } from '@/stores/storyboard'
 import { useAssetsStore } from '@/stores/assets'
 import { useUserAIConfigStore } from '@/stores/user-ai-config'
 import { storyboardApi } from '@/api/storyboard'
+import type { StoryboardGenerationStatus } from '@/api/storyboard'
 import LoadingOverlay from '@/components/common/LoadingOverlay.vue'
 import TopbarActions from '@/components/common/TopbarActions.vue'
 import AssetPanel from '@/components/storyboard/AssetPanel.vue'
@@ -12,7 +13,7 @@ import StoryboardScript from '@/components/storyboard/StoryboardScript.vue'
 import PreviewPanel from '@/components/storyboard/PreviewPanel.vue'
 import Timeline from '@/components/storyboard/Timeline.vue'
 import ShotEditor from '@/components/storyboard/ShotEditor.vue'
-import type { ShotDetail } from '@/types/shot'
+import type { ShotDetail, ShotUpdate, ShotVisualReference } from '@/types/shot'
 import type { CharacterDetail } from '@/types/character'
 import type { SceneDetail } from '@/types/scene'
 import type { SegmentDetail } from '@/types/segment'
@@ -44,11 +45,72 @@ const modelOptions = computed(() => {
   const models = aiConfigStore.modelsByType.video
   if (!models.length) return []
   return models.map(m => ({
-    value: String(m.model_id || m.id),
+    value: String(m.id),
     label: `${m.provider_name} · ${m.display_name || m.model_id}`,
+    supportsReferences: supportsVideoReferences(m.capabilities_json),
   }))
 })
-const selectedModel = ref('seedance-2.0')
+const selectedModel = ref('')
+const selectedAspectRatio = ref<'9:16' | '16:9' | '1:1'>('9:16')
+const selectedGenerationResolution = ref('720x1280')
+const selectedVideoModel = computed(() => {
+  const id = Number(selectedModel.value)
+  return aiConfigStore.modelsByType.video.find(model => model.id === id) || null
+})
+const currentModelSupportsReferences = computed(() =>
+  supportsVideoReferences(selectedVideoModel.value?.capabilities_json)
+)
+const referenceCapableModels = computed(() =>
+  aiConfigStore.modelsByType.video.filter(model => supportsVideoReferences(model.capabilities_json))
+)
+const referenceModelHint = computed(() => {
+  if (!aiConfigStore.modelsByType.video.length) return '请先在设置页配置视频模型'
+  if (currentModelSupportsReferences.value) return '当前模型支持参考图'
+  if (referenceCapableModels.value.length) {
+    return `可切换：${referenceCapableModels.value.map(model => model.display_name || model.model_id).join('、')}`
+  }
+  return '可用模型：Veo 3.1 Fast、Sora 2、Runway Gen-4 Turbo、Kling I2V'
+})
+function supportsVideoReferences(caps: Record<string, any> | undefined) {
+  return Boolean(caps?.video_reference_images || caps?.video_first_frame || caps?.video_multi_reference)
+}
+
+const aspectRatioOptions = [
+  { value: '9:16', label: '竖屏 9:16' },
+  { value: '16:9', label: '横屏 16:9' },
+  { value: '1:1', label: '方形 1:1' },
+] as const
+
+const generationResolutionOptions = computed(() => {
+  if (selectedAspectRatio.value === '16:9') {
+    return [
+      { value: '1280x720', label: '720P · 1280x720' },
+      { value: '1920x1080', label: '1080P · 1920x1080' },
+    ]
+  }
+  if (selectedAspectRatio.value === '1:1') {
+    return [
+      { value: '720x720', label: '720P · 720x720' },
+      { value: '1024x1024', label: '1024 · 1024x1024' },
+    ]
+  }
+  return [
+    { value: '720x1280', label: '720P · 720x1280' },
+    { value: '1080x1920', label: '1080P · 1080x1920' },
+  ]
+})
+
+watch(selectedAspectRatio, () => {
+  selectedGenerationResolution.value = generationResolutionOptions.value[0]?.value || ''
+})
+
+function videoGenerateOptions() {
+  return {
+    video_model_config_id: Number(selectedModel.value) || undefined,
+    resolution: selectedGenerationResolution.value || undefined,
+    aspect_ratio: selectedAspectRatio.value || undefined,
+  }
+}
 // Sync selectedModel when modelOptions load
 watch(modelOptions, (opts) => {
   if (opts.length && !opts.find(o => o.value === selectedModel.value)) {
@@ -59,11 +121,16 @@ watch(modelOptions, (opts) => {
 // ── Editing state ──
 const editingShot = ref(false)
 const savingShot = ref(false)
+const savingScript = ref(false)
 
 // ── Generation state ──
 const generatingSegmentIds = ref<Set<number>>(new Set())
-const generatingAll = ref(false)
-const generatingAllProgress = ref('')
+const generatingShotIds = ref<Set<number>>(new Set())
+const storyboardGenerationStatus = ref<StoryboardGenerationStatus>({
+  status: 'idle',
+  progress: 0,
+  message: '尚未生成分镜',
+})
 const composing = ref(false)
 const downloading = ref(false)
 const exporting = ref(false)
@@ -94,23 +161,119 @@ function showToast(msg: string, type: 'success' | 'error' | 'info' = 'info') {
 
 // ── Polling ──
 let pollTimer: ReturnType<typeof setInterval> | null = null
+let previousSegmentStatuses: Record<number, string> = {}
+let pollCount = 0
+const MAX_POLL_COUNT = 200  // ~10 minutes max
+const POLL_INTERVAL = 3000
 
 function startPolling() {
   if (pollTimer) return
+  pollCount = 0
+  // Snapshot current segment count to detect new segments appearing
+  const segmentCountBefore = sbStore.storyboard?.segments?.length || 0
   pollTimer = setInterval(async () => {
+    pollCount++
     try {
       await sbStore.fetchStoryboard(projectId, episodeId)
-      // Stop polling if no segments are generating
-      const stillGenerating = sbStore.storyboard?.segments.some(s => s.status === 'generating')
-      if (!stillGenerating && generatingSegmentIds.value.size === 0) {
+      const segments = sbStore.storyboard?.segments || []
+
+      if (sbStore.generatingStoryboard) {
+        const { data: status } = await storyboardApi.getGenerationStatus(projectId, episodeId)
+        storyboardGenerationStatus.value = status
+        if (status.status === 'failed') {
+          sbStore.onStoryboardGenerated()
+          showToast(status.message || '分镜脚本生成失败', 'error')
+        }
+      }
+
+      // Detect storyboard generation: segments appeared where there were none,
+      // or segment count increased (background task finished)
+      if (sbStore.generatingStoryboard && segments.length > 0) {
+        if (segmentCountBefore === 0 || segments.length > segmentCountBefore) {
+          sbStore.onStoryboardGenerated()
+          storyboardGenerationStatus.value = {
+            status: 'completed',
+            progress: 100,
+            message: '分镜脚本已生成完成',
+          }
+          notifyUser('分镜脚本', '分镜脚本已生成完成')
+        }
+      }
+
+      // Track segment status changes for notification and cleanup
+      for (const seg of segments) {
+        const prev = previousSegmentStatuses[seg.id]
+        if (prev && prev === 'generating' && seg.status !== 'generating') {
+          // Segment finished generating — notify and clean up
+          const label = seg.status === 'completed' ? '已完成' : '生成失败'
+          notifyUser(`片段 ${seg.index + 1}`, `素材生成${label}`)
+          // Remove from tracking set
+          const next = new Set(generatingSegmentIds.value)
+          next.delete(seg.id)
+          generatingSegmentIds.value = next
+        }
+        previousSegmentStatuses[seg.id] = seg.status
+      }
+
+      const nextShotIds = new Set(generatingShotIds.value)
+      for (const seg of segments) {
+        for (const shot of seg.shots || []) {
+          if (!nextShotIds.has(shot.id)) continue
+          if (shot.video_url || shot.shot_status === 'failed') {
+            const label = shot.video_url ? '已完成' : '生成失败'
+            notifyUser(`分镜 ${shot.index + 1}`, `视频生成${label}`)
+            nextShotIds.delete(shot.id)
+          }
+        }
+      }
+      generatingShotIds.value = nextShotIds
+
+      // Stop condition
+      const stillGenerating = segments.some(s => s.status === 'generating')
+      const shouldStop = !stillGenerating && generatingSegmentIds.value.size === 0 && generatingShotIds.value.size === 0 && !sbStore.generatingStoryboard
+
+      // Safety: force stop after max poll count to prevent infinite polling
+      if (shouldStop || pollCount >= MAX_POLL_COUNT) {
+        if (pollCount >= MAX_POLL_COUNT) {
+          console.warn('[StoryboardEditor] Polling stopped after reaching max count')
+          if (sbStore.generatingStoryboard) sbStore.onStoryboardGenerated()
+        }
         stopPolling()
       }
     } catch { /* silent */ }
-  }, 3000)
+  }, POLL_INTERVAL)
 }
 
 function stopPolling() {
   if (pollTimer) { clearInterval(pollTimer); pollTimer = null }
+  pollCount = 0
+}
+
+// ── Browser notification ──
+let notificationPermission: NotificationPermission = 'default'
+
+async function requestNotificationPermission() {
+  if (!('Notification' in window)) return
+  if (Notification.permission === 'granted') {
+    notificationPermission = 'granted'
+    return
+  }
+  if (Notification.permission === 'denied') {
+    notificationPermission = 'denied'
+    return
+  }
+  notificationPermission = await Notification.requestPermission()
+}
+
+function notifyUser(title: string, body: string) {
+  if (notificationPermission === 'granted') {
+    new Notification(`DramaForge · ${title}`, {
+      body,
+      icon: '/favicon.ico',
+    })
+  }
+  // Also show in-page toast
+  showToast(`${title}：${body}`, 'success')
 }
 
 onMounted(async () => {
@@ -120,6 +283,7 @@ onMounted(async () => {
     aiConfigStore.fetchProviders(),
   ])
   document.addEventListener('keydown', onKeydown)
+  requestNotificationPermission()
 })
 
 onBeforeUnmount(() => {
@@ -129,8 +293,8 @@ onBeforeUnmount(() => {
 
 // ── Navigation guard ──
 onBeforeRouteLeave((_to, _from, next) => {
-  if (generatingSegmentIds.value.size > 0 || generatingAll.value) {
-    const leave = window.confirm('有片段正在生成中，确定要离开吗？生成进度会丢失。')
+  if (generatingSegmentIds.value.size > 0 || generatingShotIds.value.size > 0 || sbStore.generatingStoryboard) {
+    const leave = window.confirm('有任务正在后台生成中，确定要离开吗？生成将在后台继续。')
     if (!leave) return next(false)
   }
   stopPolling()
@@ -147,24 +311,13 @@ const allSegmentsCompleted = computed(() => {
   return segs.every(s => s.status === 'completed')
 })
 
-const anySegmentPending = computed(() => {
-  const segs = sbStore.storyboard?.segments
-  if (!segs || segs.length === 0) return false
-  return segs.some(s => s.status === 'pending' || s.status === 'failed')
-})
-
-const pendingSegmentCount = computed(() => {
-  const segs = sbStore.storyboard?.segments || []
-  return segs.filter(s => s.status === 'pending' || s.status === 'failed').length
-})
-
 function goBack() {
   router.push(`/projects/${projectId}/episodes`)
 }
 
 // ── Shot selection ──
 function handleSelectShot(_shot: ShotDetail, index: number) {
-  sbStore.currentShotIndex = index
+  sbStore.selectShot(index)
 }
 
 // ── Asset selection ──
@@ -207,6 +360,7 @@ function handleEditScript() {
       narration: sbStore.currentShot.narration,
       scene_ref: sbStore.currentShot.scene_ref,
       background: sbStore.currentShot.background,
+      visual_references: sbStore.currentShot.visual_references,
     })
   }
   editingShot.value = true
@@ -224,6 +378,34 @@ async function handleSaveShot(data: Partial<ShotDetail>) {
     showToast('保存失败，请重试', 'error')
   } finally {
     savingShot.value = false
+  }
+}
+
+async function handleSaveScript(updates: Array<{ shot: ShotDetail; data: ShotUpdate }>) {
+  if (!updates.length) return
+  savingScript.value = true
+  try {
+    await Promise.all(
+      updates.map(({ shot, data }) =>
+        storyboardApi.updateShot(projectId, episodeId, shot.id, data)
+      )
+    )
+    await sbStore.fetchStoryboard(projectId, episodeId)
+    showToast('脚本已保存', 'success')
+  } catch (e: any) {
+    showToast(e?.response?.data?.detail || '脚本保存失败，请重试', 'error')
+  } finally {
+    savingScript.value = false
+  }
+}
+
+async function handleUpdateShotReferences(shot: ShotDetail, references: ShotVisualReference[]) {
+  try {
+    await storyboardApi.updateShot(projectId, episodeId, shot.id, { visual_references: references })
+    await sbStore.fetchStoryboard(projectId, episodeId)
+    showToast('参考图已更新', 'success')
+  } catch (e: any) {
+    showToast('参考图保存失败', 'error')
   }
 }
 
@@ -259,19 +441,40 @@ async function handleGenerateSegment(segment?: SegmentDetail) {
 
   const segId = seg.id
   generatingSegmentIds.value = new Set([...generatingSegmentIds.value, segId])
+  generatingShotIds.value = new Set([
+    ...generatingShotIds.value,
+    ...seg.shots.map(shot => shot.id),
+  ])
   startPolling()
 
   try {
-    await storyboardApi.generateSegment(projectId, episodeId, segId)
-    showToast('素材生成任务已提交', 'success')
+    await storyboardApi.generateSegment(projectId, episodeId, segId, {
+      ...videoGenerateOptions(),
+    })
+    showToast('素材生成任务已提交', 'info')
   } catch (e: any) {
     showToast(e?.response?.data?.detail || '素材生成失败', 'error')
-  } finally {
     const next = new Set(generatingSegmentIds.value)
     next.delete(segId)
     generatingSegmentIds.value = next
-    // Refresh to get latest status
-    await sbStore.fetchStoryboard(projectId, episodeId)
+  }
+}
+
+// ── Generate single shot ──
+async function handleGenerateShot(shot: ShotDetail) {
+  generatingShotIds.value = new Set([...generatingShotIds.value, shot.id])
+  startPolling()
+
+  try {
+    await storyboardApi.generateShot(projectId, episodeId, shot.id, {
+      ...videoGenerateOptions(),
+    })
+    showToast(`分镜 ${shot.index + 1} 生成任务已提交`, 'info')
+  } catch (e: any) {
+    showToast(e?.response?.data?.detail || '分镜生成失败', 'error')
+    const next = new Set(generatingShotIds.value)
+    next.delete(shot.id)
+    generatingShotIds.value = next
   }
 }
 
@@ -280,51 +483,23 @@ async function handleRegenerateSegment() {
   if (!sbStore.currentSegment) return
   const segId = sbStore.currentSegment.id
   generatingSegmentIds.value = new Set([...generatingSegmentIds.value, segId])
+  generatingShotIds.value = new Set([
+    ...generatingShotIds.value,
+    ...sbStore.currentSegment.shots.map(shot => shot.id),
+  ])
   startPolling()
 
   try {
-    await storyboardApi.regenerateSegment(projectId, episodeId, segId)
-    showToast('重新生成任务已提交', 'success')
+    await storyboardApi.regenerateSegment(projectId, episodeId, segId, {
+      ...videoGenerateOptions(),
+    })
+    showToast('重新生成任务已提交', 'info')
   } catch (e: any) {
     showToast(e?.response?.data?.detail || '重新生成失败', 'error')
-  } finally {
     const next = new Set(generatingSegmentIds.value)
     next.delete(segId)
     generatingSegmentIds.value = next
-    await sbStore.fetchStoryboard(projectId, episodeId)
   }
-}
-
-// ── Batch generate all ──
-async function handleGenerateAll() {
-  const segs = sbStore.storyboard?.segments || []
-  const pending = segs.filter(s => s.status === 'pending' || s.status === 'failed')
-  if (pending.length === 0) return
-
-  generatingAll.value = true
-  let completed = 0
-  const total = pending.length
-
-  for (const seg of pending) {
-    generatingAllProgress.value = `正在生成素材 (${completed}/${total})...`
-    generatingSegmentIds.value = new Set([...generatingSegmentIds.value, seg.id])
-
-    try {
-      await storyboardApi.generateSegment(projectId, episodeId, seg.id)
-      completed++
-    } catch (e: any) {
-      showToast(`片段${seg.index + 1}生成失败`, 'error')
-    } finally {
-      const next = new Set(generatingSegmentIds.value)
-      next.delete(seg.id)
-      generatingSegmentIds.value = next
-    }
-  }
-
-  generatingAll.value = false
-  generatingAllProgress.value = ''
-  await sbStore.fetchStoryboard(projectId, episodeId)
-  showToast(`素材生成完成 (${completed}/${total})`, completed > 0 ? 'success' : 'error')
 }
 
 // ── Compose episode ──
@@ -426,10 +601,22 @@ async function handleExport() {
 
 // ── Generate storyboard (initial) ──
 async function handleGenerateStoryboard() {
+  storyboardGenerationStatus.value = {
+    status: 'generating',
+    progress: 1,
+    message: '分镜任务提交中',
+  }
   try {
     await sbStore.generateStoryboard(projectId, episodeId)
-    showToast('分镜脚本生成完成', 'success')
+    // API returned immediately; start polling to wait for completion
+    startPolling()
+    showToast('分镜脚本生成任务已提交', 'info')
   } catch (e: any) {
+    storyboardGenerationStatus.value = {
+      status: 'failed',
+      progress: 100,
+      message: e?.response?.data?.detail || '分镜生成失败',
+    }
     showToast(e?.response?.data?.detail || '分镜生成失败', 'error')
   }
 }
@@ -441,7 +628,7 @@ watch(() => sbStore.currentSegmentIndex, () => {
 </script>
 
 <template>
-  <LoadingOverlay :visible="sbStore.loading" message="正在加载分镜..." />
+  <LoadingOverlay :visible="sbStore.loading && !sbStore.storyboard" message="正在加载分镜..." />
 
   <div class="sb-root">
     <!-- ═══ Top Bar ═══ -->
@@ -476,12 +663,24 @@ watch(() => sbStore.currentSegmentIndex, () => {
         <!-- Model selector -->
         <select v-if="modelOptions.length" v-model="selectedModel" class="sb-model-select">
           <option v-for="opt in modelOptions" :key="opt.value" :value="opt.value">
-            {{ opt.label }}
+            {{ opt.label }} · {{ opt.supportsReferences ? '可用参考图' : '普通视频' }}
           </option>
         </select>
         <router-link v-else to="/settings" class="text-[12px] text-purple-500 hover:text-purple-700 underline">
           配置视频模型
         </router-link>
+
+        <select v-model="selectedAspectRatio" class="sb-model-select sb-model-select--compact" title="视频比例">
+          <option v-for="opt in aspectRatioOptions" :key="opt.value" :value="opt.value">
+            {{ opt.label }}
+          </option>
+        </select>
+
+        <select v-model="selectedGenerationResolution" class="sb-model-select sb-model-select--size" title="生成尺寸">
+          <option v-for="opt in generationResolutionOptions" :key="opt.value" :value="opt.value">
+            {{ opt.label }}
+          </option>
+        </select>
 
         <!-- Export -->
         <button class="sb-btn sb-btn--outline" :disabled="exporting" @click="handleExport">
@@ -632,32 +831,6 @@ watch(() => sbStore.currentSegmentIndex, () => {
           <!-- CENTER: Script / Editor -->
           <div class="sb-center">
             <template v-if="sbStore.storyboard && sbStore.storyboard.segments.length">
-              <!-- Batch generate banner -->
-              <div v-if="anySegmentPending && !generatingAll" class="sb-batch-banner">
-                <div class="sb-batch-info">
-                  <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-                    <circle cx="8" cy="8" r="6.5" stroke="currentColor" stroke-width="1.3"/>
-                    <path d="M8 5v3.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
-                    <circle cx="8" cy="12" r="0.7" fill="currentColor"/>
-                  </svg>
-                  <span>{{ pendingSegmentCount }} 个片段待生成素材</span>
-                </div>
-                <button class="sb-btn sb-btn--primary sb-btn--sm" @click="handleGenerateAll">
-                  <svg width="13" height="13" viewBox="0 0 13 13" fill="none">
-                    <polygon points="3.5,1.5 3.5,11.5 10.5,6.5" fill="currentColor"/>
-                  </svg>
-                  全部生成
-                </button>
-              </div>
-
-              <!-- Batch progress -->
-              <div v-if="generatingAll" class="sb-batch-banner sb-batch-banner--active">
-                <div class="flex items-center gap-2">
-                  <div class="w-4 h-4 border-2 border-purple-500 border-t-transparent rounded-full animate-spin" />
-                  <span class="text-[13px] text-purple-600 font-medium">{{ generatingAllProgress || '正在生成...' }}</span>
-                </div>
-              </div>
-
               <!-- Shot Editor (when editing) -->
               <ShotEditor
                 v-if="editingShot && sbStore.currentShot"
@@ -676,12 +849,22 @@ watch(() => sbStore.currentSegmentIndex, () => {
                 :adding-shot="addingShot"
                 :deleting-shot-id="deletingShotId"
                 :locked-character-ids="lockedCharacterIds"
+                :characters="assetsStore.characters"
+                :scenes="assetsStore.scenes"
+                :references-enabled="currentModelSupportsReferences"
+                :reference-model-hint="referenceModelHint"
+                :saving-script="savingScript"
+                :generating-shot-ids="generatingShotIds"
+                :selected-shot="sbStore.currentShot"
                 @edit-script="handleEditScript"
+                @save-script="handleSaveScript"
+                @generate-shot="handleGenerateShot"
                 @generate-segment="handleGenerateSegment()"
                 @regenerate="handleRegenerateSegment"
                 @select-shot="handleSelectShot"
                 @add-shot="handleAddShot"
                 @delete-shot="handleDeleteShot"
+                @update-shot-references="handleUpdateShotReferences"
               />
             </template>
 
@@ -696,7 +879,7 @@ watch(() => sbStore.currentSegmentIndex, () => {
             </div>
 
             <!-- Empty state (no storyboard yet) -->
-            <div v-else-if="!sbStore.loading" class="sb-empty">
+            <div v-else-if="!sbStore.loading && !sbStore.generatingStoryboard" class="sb-empty">
               <div class="sb-empty-icon">
                 <svg width="56" height="56" viewBox="0 0 56 56" fill="none">
                   <rect x="4" y="8" width="48" height="36" rx="6" stroke="#A89870" stroke-width="2.5"/>
@@ -713,10 +896,33 @@ watch(() => sbStore.currentSegmentIndex, () => {
                 生成分镜脚本
               </button>
             </div>
+
+            <!-- Generating storyboard state -->
+            <div v-else-if="sbStore.generatingStoryboard" class="sb-empty">
+              <div class="sb-empty-icon">
+                <div class="w-14 h-14 border-4 border-[#E8A317] border-t-transparent rounded-full animate-spin" />
+              </div>
+              <h3 class="sb-empty-title">正在生成分镜脚本...</h3>
+              <p class="sb-empty-desc">{{ storyboardGenerationStatus.message || 'AI 正在分析剧本并拆分镜头，请稍候' }}</p>
+              <div class="sb-storyboard-progress">
+                <div class="sb-storyboard-progress-head">
+                  <span>分镜生成进度</span>
+                  <strong>{{ storyboardGenerationStatus.progress || 1 }}%</strong>
+                </div>
+                <div class="sb-storyboard-progress-track">
+                  <span :style="{ width: `${storyboardGenerationStatus.progress || 1}%` }" />
+                </div>
+              </div>
+            </div>
           </div>
 
           <!-- RIGHT: Preview Panel -->
-          <PreviewPanel :shot="sbStore.currentShot" @download="handlePreviewDownload" />
+          <PreviewPanel
+            :shot="sbStore.currentShot"
+            :segment="sbStore.currentSegment"
+            :target="sbStore.previewTarget"
+            @download="handlePreviewDownload"
+          />
         </div>
 
         <!-- ═══ Bottom Timeline ═══ -->
@@ -817,6 +1023,8 @@ watch(() => sbStore.currentSegmentIndex, () => {
   display: flex;
   align-items: center;
   gap: 10px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 
 .sb-model-select {
@@ -834,6 +1042,16 @@ watch(() => sbStore.currentSegmentIndex, () => {
 }
 .sb-model-select:hover { border-color: #A89870; }
 .sb-model-select:focus { border-color: #E8A317; }
+
+.sb-model-select--compact {
+  width: 104px;
+  padding: 0 8px;
+}
+
+.sb-model-select--size {
+  width: 148px;
+  padding: 0 8px;
+}
 
 /* ── Topbar buttons ── */
 .sb-btn {
@@ -928,33 +1146,6 @@ watch(() => sbStore.currentSegmentIndex, () => {
   min-height: 0;
 }
 
-/* ═══ Batch Banner ═══ */
-.sb-batch-banner {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 10px 16px;
-  margin: 0;
-  background: #FFFBEB;
-  border-bottom: 1px solid #FDE68A;
-}
-.sb-batch-banner--active {
-  background: rgba(232, 163, 23, 0.08);
-  border-bottom-color: #D4C898;
-}
-
-.sb-batch-info {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 13px;
-  color: #92400e;
-  font-weight: 500;
-}
-.sb-batch-banner--active .sb-batch-info {
-  color: #C88A0C;
-}
-
 /* ═══ Empty State ═══ */
 .sb-empty {
   display: flex;
@@ -979,6 +1170,51 @@ watch(() => sbStore.currentSegmentIndex, () => {
   font-size: 14px;
   color: #aaa;
   margin: 0 0 8px;
+}
+
+.sb-storyboard-progress {
+  width: min(420px, 78%);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.sb-storyboard-progress-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: #7b5a12;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.sb-storyboard-progress-head span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sb-storyboard-progress-head strong {
+  color: #2D2515;
+  font-variant-numeric: tabular-nums;
+}
+
+.sb-storyboard-progress-track {
+  height: 7px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(168, 130, 60, 0.24);
+}
+
+.sb-storyboard-progress-track span {
+  display: block;
+  height: 100%;
+  min-width: 8px;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #E8A317 0%, #2D2515 100%);
+  transition: width 0.25s ease;
 }
 
 /* ═══ Toast ═══ */

@@ -6,6 +6,19 @@ export interface ShotCharacterRef {
   action: string
 }
 
+export interface ShotVisualReference {
+  id: string
+  type: 'character' | 'scene' | 'style'
+  asset_id: number
+  image_url: string
+  label: string
+  role: 'identity' | 'environment' | 'composition' | 'style'
+  target: string
+  placement: string
+  scope: string
+  instruction: string
+}
+
 export interface ShotDetail {
   id: number
   segment_id: number
@@ -21,6 +34,7 @@ export interface ShotDetail {
   voice_style: string
   background: string
   transition: string
+  visual_references: ShotVisualReference[]
   image_prompt: string
   video_prompt: string
   emotion?: string
@@ -28,6 +42,8 @@ export interface ShotDetail {
   image_url: string | null
   audio_url: string | null
   video_url: string | null
+  shot_status?: 'pending' | 'generating' | 'completed' | 'failed' | string
+  error_message?: string | null
   created_at: string
 }
 
@@ -43,6 +59,7 @@ export interface ShotUpdate {
   voice_style?: string
   background?: string
   transition?: string
+  visual_references?: ShotVisualReference[]
   image_prompt?: string
   video_prompt?: string
   emotion?: string

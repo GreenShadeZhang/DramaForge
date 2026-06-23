@@ -19,6 +19,9 @@ const durationLabel = computed(() => {
   return `${Math.round(duration)}s`
 })
 
+const shotCountLabel = computed(() => `${props.segment.shots?.length || 0} 分镜`)
+const statusLabel = computed(() => SegmentStatusLabel[props.segment.status] || props.segment.status)
+
 const statusDot: Record<string, string> = {
   [SegmentStatus.PENDING]: 'dot-muted',
   [SegmentStatus.GENERATING]: 'dot-active',
@@ -39,54 +42,57 @@ const statusDot: Record<string, string> = {
       <span v-else class="timeline-fallback">片段 {{ String(index + 1).padStart(2, '0') }}</span>
 
       <span class="timeline-index">{{ String(index + 1).padStart(2, '0') }}</span>
+      <span class="timeline-duration">{{ durationLabel }}</span>
       <span
         class="timeline-status-dot"
         :class="statusDot[segment.status] || 'dot-muted'"
-        :title="SegmentStatusLabel[segment.status] || segment.status"
+        :title="statusLabel"
       />
     </span>
 
     <span class="timeline-label">
-      <span>片段 {{ String(index + 1).padStart(2, '0') }}</span>
-      <span>{{ durationLabel }}</span>
+      <span class="timeline-name">片段 {{ String(index + 1).padStart(2, '0') }}</span>
+      <span class="timeline-meta">{{ shotCountLabel }}</span>
     </span>
   </button>
 </template>
 
 <style scoped>
 .timeline-item {
-  width: 112px;
+  width: 118px;
   flex: 0 0 auto;
   display: flex;
   flex-direction: column;
   gap: 5px;
-  padding: 4px;
-  border: 1px solid transparent;
-  border-radius: 2px;
-  background: transparent;
+  padding: 5px;
+  border: 1px solid rgba(168, 130, 60, 0.22);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.48);
   color: inherit;
   cursor: pointer;
-  transition: border-color 0.15s ease, background 0.15s ease, box-shadow 0.15s ease;
+  transition: border-color 0.15s ease, background 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease;
 }
 
 .timeline-item:hover {
-  background: #f8fafc;
-  border-color: #A89870;
+  background: #fffaf0;
+  border-color: rgba(168, 130, 60, 0.72);
+  transform: translateY(-1px);
 }
 
 .timeline-item.active {
-  background: #FDF5D6;
-  border-color: #111827;
-  box-shadow: 0 0 0 1px rgba(17, 24, 39, 0.08);
+  background: #fff7db;
+  border-color: #2d2515;
+  box-shadow: 0 0 0 1px rgba(45, 37, 21, 0.1), 0 10px 22px rgba(72, 42, 10, 0.14);
 }
 
 .timeline-thumb {
   position: relative;
-  height: 52px;
+  height: 56px;
   display: block;
   overflow: hidden;
-  border-radius: 2px;
-  background: #edf0f4;
+  border-radius: 6px;
+  background: #f2ead8;
+  box-shadow: inset 0 0 0 1px rgba(93, 52, 12, 0.08);
 }
 
 .timeline-thumb img {
@@ -95,12 +101,20 @@ const statusDot: Record<string, string> = {
   object-fit: cover;
 }
 
+.timeline-thumb::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(180deg, rgba(20, 14, 8, 0.1), rgba(20, 14, 8, 0.42));
+  pointer-events: none;
+}
+
 .timeline-fallback {
   height: 100%;
   display: flex;
   align-items: center;
   justify-content: center;
-  color: #94a3b8;
+  color: #b49b64;
   font-size: 11px;
   font-weight: 700;
 }
@@ -114,11 +128,28 @@ const statusDot: Record<string, string> = {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border-radius: 2px;
-  background: rgba(17, 24, 39, 0.74);
-  color: #2D2515;
+  border-radius: 4px;
+  background: rgba(45, 37, 21, 0.86);
+  color: #fff7db;
   font-size: 10px;
   font-weight: 800;
+  z-index: 1;
+}
+
+.timeline-duration {
+  position: absolute;
+  right: 6px;
+  bottom: 6px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 6px;
+  border-radius: 4px;
+  background: rgba(255, 247, 219, 0.9);
+  color: #2d2515;
+  font-size: 10px;
+  font-weight: 800;
+  z-index: 1;
 }
 
 .timeline-status-dot {
@@ -129,10 +160,11 @@ const statusDot: Record<string, string> = {
   height: 8px;
   border: 1px solid #fff;
   border-radius: 50%;
+  z-index: 1;
 }
 
 .dot-muted {
-  background: #cbd5e1;
+  background: #b49b64;
 }
 
 .dot-active {
@@ -150,18 +182,34 @@ const statusDot: Record<string, string> = {
 
 .timeline-label {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 4px;
-  color: #64748b;
+  flex-direction: column;
+  gap: 2px;
+  color: #6f5c38;
   font-size: 11px;
   line-height: 1.2;
+}
+
+.timeline-name {
+  min-width: 0;
+  display: flex;
+  align-items: center;
   white-space: nowrap;
+  color: #2d2515;
+  font-weight: 800;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.timeline-meta {
+  color: #8c7247;
+  font-size: 10px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .timeline-item.active .timeline-label {
-  color: #111827;
-  font-weight: 700;
+  color: #2d2515;
 }
 
 @keyframes pulse {

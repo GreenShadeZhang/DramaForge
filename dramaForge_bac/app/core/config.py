@@ -78,7 +78,7 @@ class Settings(BaseSettings):
     video_model_i2v: str = "wan-v2.1-i2v"     # 图生视频：阿里万象
     video_size: str = "720x1280"              # 竖版 9:16
     video_aspect_ratio: str = "9:16"
-    video_seconds: str = "5"
+    video_seconds: str = "8"
     video_use_async: bool = True
     video_poll_interval: int = 5
     video_timeout: int = 600

@@ -1,9 +1,12 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import type { ShotDetail } from '@/types/shot'
+import type { SegmentDetail } from '@/types/segment'
 
 const props = defineProps<{
   shot: ShotDetail | null
+  segment: SegmentDetail | null
+  target: 'segment' | 'shot'
 }>()
 
 const emit = defineEmits<{
@@ -20,13 +23,23 @@ const currentTime = ref(0)
 const duration = ref(0)
 const audioCurrentTime = ref(0)
 const audioDuration = ref(0)
+const videoLoadError = ref(false)
 
-const hasMedia = computed(() => Boolean(props.shot?.video_url || props.shot?.image_url))
-const downloadUrl = computed(() => props.shot?.video_url || props.shot?.image_url || '')
+const activeShot = computed(() => props.target === 'shot' ? props.shot : null)
+const activeSegment = computed(() => props.target === 'segment' ? props.segment : null)
+const previewVideoUrl = computed(() => activeShot.value?.video_url || activeSegment.value?.video_url || '')
+const previewImageUrl = computed(() => activeShot.value?.image_url || activeSegment.value?.thumbnail_url || '')
+const activeAudioUrl = computed(() => activeShot.value?.audio_url || activeSegment.value?.audio_url || '')
+const activeDuration = computed(() => activeShot.value?.duration || activeSegment.value?.duration || 0)
+const hasVideo = computed(() => Boolean(previewVideoUrl.value))
+const hasMedia = computed(() => Boolean(previewVideoUrl.value || previewImageUrl.value))
+const downloadUrl = computed(() => previewVideoUrl.value || previewImageUrl.value || '')
 const mediaStatus = computed(() => {
-  if (props.shot?.video_url) return '视频已生成'
-  if (props.shot?.image_url) return '素材就绪'
-  return '待生成'
+  if (videoLoadError.value && previewVideoUrl.value) return '视频不可用'
+  if (activeSegment.value?.video_url) return '片段视频已生成'
+  if (activeShot.value?.video_url) return '分镜视频已生成'
+  if (previewImageUrl.value) return '素材就绪'
+  return props.target === 'segment' ? '片段待生成' : '分镜待生成'
 })
 
 const progress = computed(() => duration.value ? (currentTime.value / duration.value) * 100 : 0)
@@ -47,10 +60,16 @@ function onVideoTimeUpdate() {
 }
 
 function onVideoLoaded() {
-  if (videoRef.value) duration.value = videoRef.value.duration || props.shot?.duration || 0
+  videoLoadError.value = false
+  if (videoRef.value) duration.value = videoRef.value.duration || activeDuration.value || 0
 }
 
 function onVideoEnded() {
+  isVideoPlaying.value = false
+}
+
+function onVideoError() {
+  videoLoadError.value = true
   isVideoPlaying.value = false
 }
 
@@ -99,6 +118,19 @@ function formatTime(s: number) {
   const sec = Math.floor(safe % 60)
   return `${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}`
 }
+
+watch(previewVideoUrl, () => {
+  isVideoPlaying.value = false
+  currentTime.value = 0
+  duration.value = activeDuration.value || 0
+  videoLoadError.value = false
+})
+
+watch(activeAudioUrl, () => {
+  audioPlaying.value = false
+  audioCurrentTime.value = 0
+  audioDuration.value = 0
+})
 </script>
 
 <template>
@@ -106,21 +138,22 @@ function formatTime(s: number) {
     <div class="preview-shell">
       <div ref="frameRef" class="preview-frame" :class="{ empty: !hasMedia }">
         <video
-          v-if="shot?.video_url"
+          v-if="previewVideoUrl"
           ref="videoRef"
-          :src="shot.video_url"
+          :src="previewVideoUrl"
           class="preview-media"
           playsinline
           @timeupdate="onVideoTimeUpdate"
           @loadedmetadata="onVideoLoaded"
+          @error="onVideoError"
           @play="isVideoPlaying = true"
           @pause="isVideoPlaying = false"
           @ended="onVideoEnded"
         />
 
         <img
-          v-else-if="shot?.image_url"
-          :src="shot.image_url"
+          v-else-if="previewImageUrl"
+          :src="previewImageUrl"
           class="preview-media"
           alt=""
           loading="lazy"
@@ -131,7 +164,7 @@ function formatTime(s: number) {
             <rect x="6" y="8" width="32" height="24" rx="5" stroke="currentColor" stroke-width="1.7"/>
             <path d="M18 16l11 6-11 6V16z" fill="currentColor"/>
           </svg>
-          <span>选择分镜查看预览</span>
+          <span>{{ target === 'segment' ? '当前片段暂无视频' : '当前分镜暂无视频' }}</span>
         </div>
 
         <div class="preview-top-tools">
@@ -150,7 +183,7 @@ function formatTime(s: number) {
           </div>
         </div>
 
-        <div v-if="shot?.video_url" class="frame-play">
+        <div v-if="hasVideo && !videoLoadError" class="frame-play">
           <button type="button" @click="toggleVideo">
             <svg v-if="isVideoPlaying" width="18" height="18" viewBox="0 0 18 18" fill="none" aria-hidden="true">
               <path d="M6 4v10M12 4v10" stroke="currentColor" stroke-width="2.1" stroke-linecap="round"/>
@@ -166,7 +199,7 @@ function formatTime(s: number) {
         <button
           class="control-play"
           type="button"
-          :disabled="!shot?.video_url"
+          :disabled="!hasVideo || videoLoadError"
           @click="toggleVideo"
           title="播放/暂停"
         >
@@ -182,7 +215,7 @@ function formatTime(s: number) {
           <span :style="{ width: `${progress}%` }" />
         </div>
 
-        <span class="time-label">{{ formatTime(currentTime) }} / {{ formatTime(duration || shot?.duration || 0) }}</span>
+        <span class="time-label">{{ formatTime(currentTime) }} / {{ formatTime(duration || activeDuration || 0) }}</span>
 
         <button class="icon-button" type="button" :disabled="!downloadUrl" title="下载" @click="downloadUrl && emit('download', downloadUrl)">
           <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
@@ -197,10 +230,10 @@ function formatTime(s: number) {
         </button>
       </div>
 
-      <div v-if="shot?.audio_url" class="audio-strip">
+      <div v-if="activeAudioUrl" class="audio-strip">
         <audio
           ref="audioRef"
-          :src="shot.audio_url"
+          :src="activeAudioUrl"
           class="hidden"
           @timeupdate="onAudioTimeUpdate"
           @loadedmetadata="onAudioLoaded"
@@ -216,27 +249,49 @@ function formatTime(s: number) {
         <span>{{ formatTime(audioCurrentTime) }}</span>
       </div>
 
-      <details v-if="shot" class="shot-summary">
+      <details v-if="activeShot" class="shot-summary">
         <summary>分镜信息</summary>
         <dl>
           <div>
             <dt>镜头</dt>
-            <dd>{{ shot.camera_type || '—' }}</dd>
+            <dd>{{ activeShot.camera_type || '—' }}</dd>
           </div>
           <div>
             <dt>运镜</dt>
-            <dd>{{ shot.camera_movement || '—' }}</dd>
+            <dd>{{ activeShot.camera_movement || '—' }}</dd>
           </div>
           <div>
             <dt>场景</dt>
-            <dd>{{ shot.scene_ref || '—' }}</dd>
+            <dd>{{ activeShot.scene_ref || '—' }}</dd>
           </div>
           <div>
             <dt>时长</dt>
-            <dd>{{ shot.duration }}s</dd>
+            <dd>{{ activeShot.duration }}s</dd>
           </div>
         </dl>
-        <p v-if="shot.image_prompt">{{ shot.image_prompt }}</p>
+        <p v-if="activeShot.image_prompt">{{ activeShot.image_prompt }}</p>
+      </details>
+
+      <details v-else-if="activeSegment" class="shot-summary" open>
+        <summary>片段信息</summary>
+        <dl>
+          <div>
+            <dt>片段</dt>
+            <dd>{{ String(activeSegment.index + 1).padStart(2, '0') }}</dd>
+          </div>
+          <div>
+            <dt>状态</dt>
+            <dd>{{ activeSegment.status }}</dd>
+          </div>
+          <div>
+            <dt>分镜</dt>
+            <dd>{{ activeSegment.shots.length }} 个</dd>
+          </div>
+          <div>
+            <dt>时长</dt>
+            <dd>{{ activeSegment.duration || activeSegment.shots.reduce((sum, shot) => sum + (shot.duration || 0), 0) }}s</dd>
+          </div>
+        </dl>
       </details>
     </div>
   </aside>
@@ -246,8 +301,10 @@ function formatTime(s: number) {
 .preview-panel {
   width: 500px;
   flex-shrink: 0;
-  border-left: 1px solid #e2e5ea;
-  background: #f3f4f6;
+  border-left: 1px solid rgba(168, 130, 60, 0.32);
+  background:
+    linear-gradient(180deg, #fff6d9 0%, #f4e7c4 100%),
+    repeating-linear-gradient(0deg, rgba(93, 52, 12, 0.035) 0, rgba(93, 52, 12, 0.035) 1px, transparent 1px, transparent 10px);
   min-height: 0;
   overflow: hidden;
 }
@@ -267,20 +324,21 @@ function formatTime(s: number) {
   max-height: calc(100vh - 52px - 130px - 110px);
   margin: 0 auto;
   overflow: hidden;
-  border-radius: 22px;
-  background: #0b0f18;
-  box-shadow: 0 14px 38px rgba(15, 23, 42, 0.18);
+  border: 1px solid rgba(168, 130, 60, 0.36);
+  border-radius: 18px;
+  background: #12100d;
+  box-shadow: 0 16px 38px rgba(80, 47, 13, 0.22);
 }
 
 .preview-frame.empty {
-  background: #141821;
+  background: #17130e;
 }
 
 .preview-media {
   width: 100%;
   height: 100%;
   object-fit: contain;
-  background: #080b10;
+  background: #0b0907;
 }
 
 .preview-empty {
@@ -290,7 +348,7 @@ function formatTime(s: number) {
   align-items: center;
   justify-content: center;
   gap: 12px;
-  color: rgba(255, 255, 255, 0.48);
+  color: rgba(255, 247, 219, 0.54);
   font-size: 13px;
 }
 
@@ -307,9 +365,9 @@ function formatTime(s: number) {
 
 .preview-badge,
 .preview-icon-row {
-  border-radius: 2px;
-  background: rgba(20, 20, 20, 0.42);
-  color: #2D2515;
+  border-radius: 6px;
+  background: rgba(45, 37, 21, 0.58);
+  color: #fff7db;
   backdrop-filter: blur(8px);
 }
 
@@ -343,13 +401,13 @@ function formatTime(s: number) {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border-radius: 50%;
+  border-radius: 5px;
   color: rgba(255, 255, 255, 0.82);
 }
 
 .preview-icon-row button:hover:not(:disabled) {
-  background: rgba(255, 255, 255, 0.12);
-  color: #2D2515;
+  background: rgba(255, 247, 219, 0.14);
+  color: #fff7db;
 }
 
 .preview-icon-row button:disabled {
@@ -370,10 +428,10 @@ function formatTime(s: number) {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border-radius: 50%;
-  background: rgba(255, 255, 255, 0.92);
-  color: #111827;
-  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.22);
+  border-radius: 8px;
+  background: rgba(255, 247, 219, 0.94);
+  color: #2d2515;
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.24);
 }
 
 .preview-controls {
@@ -391,19 +449,19 @@ function formatTime(s: number) {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  color: #111827;
-  border-radius: 50%;
+  color: #2d2515;
+  border-radius: 6px;
   transition: background 0.15s ease, color 0.15s ease;
 }
 
 .control-play:hover:not(:disabled),
 .icon-button:hover:not(:disabled) {
-  background: #e5e7eb;
+  background: #fff7db;
 }
 
 .control-play:disabled,
 .icon-button:disabled {
-  color: #b7beca;
+  color: #b9a980;
   cursor: not-allowed;
 }
 
@@ -411,7 +469,7 @@ function formatTime(s: number) {
 .audio-progress {
   height: 3px;
   border-radius: 2px;
-  background: #cbd5e1;
+  background: rgba(168, 130, 60, 0.28);
   overflow: hidden;
   cursor: pointer;
 }
@@ -421,11 +479,11 @@ function formatTime(s: number) {
   display: block;
   height: 100%;
   border-radius: inherit;
-  background: #111827;
+  background: #2d2515;
 }
 
 .time-label {
-  color: #64748b;
+  color: #7c6a46;
   font-size: 11px;
   white-space: nowrap;
 }
@@ -437,36 +495,38 @@ function formatTime(s: number) {
   gap: 10px;
   margin-top: 12px;
   padding: 8px 10px;
-  border-radius: 2px;
-  background: #FDF5D6;
+  border: 1px solid rgba(168, 130, 60, 0.24);
+  border-radius: 8px;
+  background: rgba(255, 247, 219, 0.72);
 }
 
 .audio-strip button {
   border: 0;
   background: transparent;
-  color: #111827;
+  color: #2d2515;
   font-size: 12px;
   font-weight: 700;
   cursor: pointer;
 }
 
 .audio-strip span {
-  color: #64748b;
+  color: #7c6a46;
   font-size: 11px;
 }
 
 .shot-summary {
   margin-top: 14px;
   padding: 11px 12px;
-  border-radius: 2px;
-  background: #FDF5D6;
-  color: #334155;
+  border: 1px solid rgba(168, 130, 60, 0.24);
+  border-radius: 8px;
+  background: rgba(255, 247, 219, 0.74);
+  color: #3f321e;
   font-size: 12px;
 }
 
 .shot-summary summary {
   cursor: pointer;
-  color: #111827;
+  color: #2d2515;
   font-weight: 800;
 }
 
@@ -482,12 +542,12 @@ function formatTime(s: number) {
 }
 
 .shot-summary dt {
-  color: #94a3b8;
+  color: #9a8050;
   font-size: 11px;
 }
 
 .shot-summary dd {
-  color: #334155;
+  color: #3f321e;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -495,7 +555,7 @@ function formatTime(s: number) {
 
 .shot-summary p {
   margin-top: 10px;
-  color: #64748b;
+  color: #6f5c38;
   line-height: 1.65;
   display: -webkit-box;
   -webkit-line-clamp: 3;

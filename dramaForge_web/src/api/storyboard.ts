@@ -1,6 +1,18 @@
 import api, { getToken } from './client'
 import type { ShotUpdate, ShotDetail, StoryboardDetail, StoryboardGenerateRequest } from '@/types/shot'
 
+export interface VideoGenerateOptions {
+  video_model_config_id?: number
+  resolution?: string
+  aspect_ratio?: string
+}
+
+export interface StoryboardGenerationStatus {
+  status: 'idle' | 'generating' | 'completed' | 'failed'
+  progress: number
+  message: string
+}
+
 export const storyboardApi = {
   /** 生成分镜脚本 */
   generate(projectId: number, episodeId: number, data?: StoryboardGenerateRequest) {
@@ -12,19 +24,28 @@ export const storyboardApi = {
     return api.get<StoryboardDetail>(`/projects/${projectId}/episodes/${episodeId}/storyboard`)
   },
 
+  getGenerationStatus(projectId: number, episodeId: number) {
+    return api.get<StoryboardGenerationStatus>(`/projects/${projectId}/episodes/${episodeId}/storyboard/status`)
+  },
+
   /** 编辑分镜 */
   updateShot(projectId: number, episodeId: number, shotId: number, data: ShotUpdate) {
     return api.put<ShotDetail>(`/projects/${projectId}/episodes/${episodeId}/shots/${shotId}`, data)
   },
 
   /** 生成单片段视频 */
-  generateSegment(projectId: number, episodeId: number, segmentId: number) {
-    return api.post(`/projects/${projectId}/episodes/${episodeId}/segments/${segmentId}/generate`)
+  generateSegment(projectId: number, episodeId: number, segmentId: number, data?: VideoGenerateOptions) {
+    return api.post(`/projects/${projectId}/episodes/${episodeId}/segments/${segmentId}/generate`, data || {})
+  },
+
+  /** 生成单个分镜视频 */
+  generateShot(projectId: number, episodeId: number, shotId: number, data?: VideoGenerateOptions) {
+    return api.post(`/projects/${projectId}/episodes/${episodeId}/shots/${shotId}/generate`, data || {})
   },
 
   /** 重新生成片段 */
-  regenerateSegment(projectId: number, episodeId: number, segmentId: number) {
-    return api.post(`/projects/${projectId}/episodes/${episodeId}/segments/${segmentId}/regenerate`)
+  regenerateSegment(projectId: number, episodeId: number, segmentId: number, data?: VideoGenerateOptions) {
+    return api.post(`/projects/${projectId}/episodes/${episodeId}/segments/${segmentId}/regenerate`, data || {})
   },
 
   /** 合成全集视频 */

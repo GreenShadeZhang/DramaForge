@@ -102,6 +102,15 @@ export const useUserAIConfigStore = defineStore('user-ai-config', () => {
     return model
   }
 
+  async function updateModel(modelId: number, data: Partial<ModelConfigCreate>) {
+    const model = await aiConfigApi.updateModel(modelId, data)
+    for (const provider of providers.value) {
+      const idx = provider.models.findIndex((m) => m.id === modelId)
+      if (idx >= 0) provider.models[idx] = model
+    }
+    return model
+  }
+
   async function removeModel(modelId: number) {
     await aiConfigApi.deleteModel(modelId)
     for (const provider of providers.value) {
@@ -150,6 +159,7 @@ export const useUserAIConfigStore = defineStore('user-ai-config', () => {
     testKey,
     discoverModels,
     addModel,
+    updateModel,
     removeModel,
     setDefault,
     getModelsForType,

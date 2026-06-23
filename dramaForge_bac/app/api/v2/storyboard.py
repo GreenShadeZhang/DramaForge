@@ -9,15 +9,16 @@ from __future__ import annotations
 
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, UploadFile, File
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
+from sqlalchemy.orm.attributes import set_committed_value
 from loguru import logger
 
-from app.core.database import get_db
+from app.core.database import get_db, AsyncSessionLocal
 from app.models.project import Project, ProjectStep
 from app.models.script import Script
 from app.models.episode import Episode
@@ -48,6 +49,15 @@ ALLOWED_AUDIO_CONTENT_TYPES = {
     "audio/aac",
     "audio/ogg",
 }
+STORYBOARD_PROGRESS: dict[int, dict[str, object]] = {}
+
+
+def _set_storyboard_progress(episode_id: int, status: str, progress: int, message: str) -> None:
+    STORYBOARD_PROGRESS[episode_id] = {
+        "status": status,
+        "progress": max(0, min(100, progress)),
+        "message": message,
+    }
 
 
 class ComposeRequest(BaseModel):
@@ -69,6 +79,31 @@ class ComposeRequest(BaseModel):
             raise ValueError("resolution cannot exceed 4096x4096")
         return value
 
+
+class SegmentGenerateRequest(BaseModel):
+    video_model_config_id: Optional[int] = None
+    resolution: Optional[str] = Field(
+        default=None,
+        pattern=r"^(\d{3,4}x\d{3,4}|\d{3,4}p)$",
+        description="视频分辨率或尺寸，如 720x1280、1280x720、1080p",
+    )
+    aspect_ratio: Optional[str] = Field(
+        default=None,
+        pattern=r"^\d{1,2}:\d{1,2}$",
+        description="视频比例，如 9:16、16:9、1:1",
+    )
+
+    @field_validator("resolution")
+    @classmethod
+    def validate_generation_resolution(cls, value: str | None) -> str | None:
+        if not value or "x" not in value:
+            return value
+        width, height = (int(part) for part in value.split("x", 1))
+        if width > 4096 or height > 4096:
+            raise ValueError("resolution cannot exceed 4096x4096")
+        return value
+
+
 router = APIRouter()
 
 
@@ -82,6 +117,37 @@ def _media_options(resolved) -> dict:
         "config": resolved.config or {},
         "raw_params": resolved.raw_params or {},
     }
+
+
+def _video_generation_options(resolved, body: SegmentGenerateRequest | None) -> dict:
+    options = _media_options(resolved)
+    if not body:
+        return options
+
+    raw_params = dict(options.get("raw_params") or {})
+    if body.resolution:
+        options["size"] = body.resolution
+        raw_params.setdefault("resolution", body.resolution)
+    if body.aspect_ratio:
+        options["aspect_ratio"] = body.aspect_ratio
+        raw_params.setdefault("aspect_ratio", body.aspect_ratio)
+    options["raw_params"] = raw_params
+    return options
+
+
+async def _resolve_video_model(db: AsyncSession, user_id: int, body: SegmentGenerateRequest | None):
+    model_config_id = body.video_model_config_id if body else None
+    if model_config_id:
+        resolved = await user_model_resolver.resolve_provider_model_by_id(
+            db,
+            user_id,
+            model_config_id,
+            "video",
+        )
+        if not resolved:
+            raise HTTPException(status_code=400, detail="Selected video model is unavailable")
+        return resolved
+    return await user_model_resolver.resolve(db, user_id, "video")
 
 
 async def _read_upload_limited(file: UploadFile, max_bytes: int) -> bytes:
@@ -116,59 +182,142 @@ async def _get_project_assets(project_id: int, db: AsyncSession):
     return list(chars.scalars().all()), list(scenes.scalars().all())
 
 
+async def _load_segment_shots(segment: Segment, db: AsyncSession) -> list[Shot]:
+    stmt = select(Shot).where(Shot.segment_id == segment.id).order_by(Shot.index)
+    result = await db.execute(stmt)
+    shots = list(result.scalars().all())
+    set_committed_value(segment, "shots", shots)
+    return shots
+
+
+async def _background_generate_storyboard(
+    project_id: int,
+    episode_id: int,
+    user_id: int,
+    shots_per_segment: int = 5,
+):
+    """Background task: generate storyboard segments and shots via AI."""
+    async with AsyncSessionLocal() as db:
+        try:
+            _set_storyboard_progress(episode_id, "generating", 10, "加载剧集内容")
+            episode = await db.get(Episode, episode_id)
+            if not episode:
+                logger.error(f"Background: episode {episode_id} not found for storyboard generation")
+                _set_storyboard_progress(episode_id, "failed", 100, "剧集不存在")
+                return
+
+            _set_storyboard_progress(episode_id, "generating", 20, "读取角色与场景")
+            characters, scenes = await _get_project_assets(project_id, db)
+
+            if not episode.content:
+                logger.error(f"Background: episode {episode_id} has no content")
+                _set_storyboard_progress(episode_id, "failed", 100, "剧集正文为空")
+                return
+
+            _set_storyboard_progress(episode_id, "generating", 32, "连接剧本模型")
+            chat_resolved = await user_model_resolver.resolve(db, user_id, "chat")
+
+            _set_storyboard_progress(episode_id, "generating", 48, "生成分镜结构")
+            segments = await video_engine.generate_episode(
+                episode=episode,
+                characters=characters,
+                scenes=scenes,
+                project_id=project_id,
+                shots_per_segment=shots_per_segment,
+                chat_model=chat_resolved.model_id,
+                chat_api_key=chat_resolved.api_key,
+                chat_base_url=chat_resolved.base_url,
+                chat_options=chat_resolved.raw_params or {},
+            )
+
+            _set_storyboard_progress(episode_id, "generating", 88, "写入分镜结果")
+            for segment in segments:
+                db.add(segment)
+            await db.commit()
+
+            total_shots = sum(len(seg.shots) for seg in segments)
+            logger.info(
+                f"Background: storyboard generated for episode {episode_id} "
+                f"— {len(segments)} segments, {total_shots} shots"
+            )
+            _set_storyboard_progress(episode_id, "completed", 100, "分镜生成完成")
+        except Exception as e:
+            logger.error(f"Background: storyboard generation failed for episode {episode_id}: {e}")
+            await db.rollback()
+            _set_storyboard_progress(episode_id, "failed", 100, str(e)[:120] or "分镜生成失败")
+
+
 @router.post("/projects/{project_id}/episodes/{episode_id}/storyboard")
 async def generate_storyboard(
     project_id: int,
     episode_id: int,
     user: CurrentUser,
     db: DbSession,
+    background_tasks: BackgroundTasks,
     body: StoryboardGenerateRequest = StoryboardGenerateRequest(),
 ):
-    """Generate storyboard (segments + shots) for an episode via AI."""
+    """Generate storyboard (segments + shots) for an episode via AI (async)."""
     # Consume credits for storyboard generation
     await require_credits(db, user.id, "storyboard_gen", description="分镜自动生成")
-    await db.commit()  # release write lock before the AI call
+    await db.commit()  # release write lock before background task
 
     episode = await _get_episode(project_id, episode_id, db)
-    characters, scenes = await _get_project_assets(project_id, db)
 
     if not episode.content:
         raise HTTPException(status_code=400, detail="Episode has no content")
 
+    _set_storyboard_progress(episode_id, "generating", 5, "分镜任务已提交")
+
     # Remove existing segments if force regenerate
     if body.force:
+        _set_storyboard_progress(episode_id, "generating", 8, "清理旧分镜")
         existing = await db.execute(
             select(Segment).where(Segment.episode_id == episode_id)
         )
         for seg in existing.scalars().all():
             await db.delete(seg)
-        await db.flush()
+        await db.commit()
 
-    chat_resolved = await user_model_resolver.resolve(db, user.id, "chat")
-
-    # Generate via VideoEngine
-    segments = await video_engine.generate_episode(
-        episode=episode,
-        characters=characters,
-        scenes=scenes,
+    # Fire background task
+    background_tasks.add_task(
+        _background_generate_storyboard,
         project_id=project_id,
+        episode_id=episode_id,
+        user_id=user.id,
         shots_per_segment=body.shots_per_segment,
-        chat_model=chat_resolved.model_id,
-        chat_api_key=chat_resolved.api_key,
-        chat_base_url=chat_resolved.base_url,
-        chat_options=chat_resolved.raw_params or {},
     )
 
-    # Persist to DB
-    for segment in segments:
-        db.add(segment)
-    await db.flush()
-
-    total_shots = sum(len(seg.shots) for seg in segments)
     return {
-        "message": "Storyboard generated",
-        "segments": len(segments),
-        "total_shots": total_shots,
+        "message": "Storyboard generation started",
+        "status": "generating",
+    }
+
+
+@router.get("/projects/{project_id}/episodes/{episode_id}/storyboard/status")
+async def get_storyboard_generation_status(
+    project_id: int,
+    episode_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    """Get storyboard generation progress for an episode."""
+    await _get_episode(project_id, episode_id, db)
+    progress = STORYBOARD_PROGRESS.get(episode_id)
+    if progress:
+        return progress
+
+    result = await db.execute(
+        select(Segment.id).where(Segment.episode_id == episode_id).limit(1)
+    )
+    if result.first():
+        return {
+            "status": "completed",
+            "progress": 100,
+            "message": "分镜已生成",
+        }
+    return {
+        "status": "idle",
+        "progress": 0,
+        "message": "尚未生成分镜",
     }
 
 
@@ -228,6 +377,11 @@ async def update_shot(
             c.model_dump() if hasattr(c, "model_dump") else c
             for c in update_data["characters"]
         ]
+    if "visual_references" in update_data and update_data["visual_references"] is not None:
+        update_data["visual_references"] = [
+            ref.model_dump() if hasattr(ref, "model_dump") else ref
+            for ref in update_data["visual_references"]
+        ]
 
     for key, value in update_data.items():
         setattr(shot, key, value)
@@ -237,6 +391,164 @@ async def update_shot(
     return shot
 
 
+async def _background_generate_segment(
+    segment_id: int,
+    project_id: int,
+    episode_number: int,
+    user_id: int,
+    video_model_config_id: Optional[int] = None,
+    resolution: Optional[str] = None,
+    aspect_ratio: Optional[str] = None,
+):
+    """Background task: generate assets and video for a segment."""
+    async with AsyncSessionLocal() as db:
+        try:
+            segment = await db.get(Segment, segment_id)
+            if not segment:
+                logger.error(f"Background: segment {segment_id} not found")
+                return
+
+            await _load_segment_shots(segment, db)
+
+            characters, scenes = await _get_project_assets(project_id, db)
+
+            body = SegmentGenerateRequest(
+                video_model_config_id=video_model_config_id,
+                resolution=resolution,
+                aspect_ratio=aspect_ratio,
+            ) if video_model_config_id or resolution or aspect_ratio else None
+            video_resolved = await _resolve_video_model(db, user_id, body)
+            video_options = _video_generation_options(video_resolved, body)
+
+            await video_engine.generate_segment_videos_only(
+                segment=segment,
+                characters=characters,
+                scenes=scenes,
+                project_id=project_id,
+                ep_num=episode_number,
+                video_model=video_resolved.model_id,
+                video_api_key=video_resolved.api_key,
+                video_base_url=video_resolved.base_url,
+                video_options=video_options,
+                video_capabilities=video_resolved.capabilities or {},
+            )
+
+            await video_engine._generate_segment_video(
+                segment,
+                project_id,
+                episode_number,
+                video_model=video_resolved.model_id,
+                video_api_key=video_resolved.api_key,
+                video_base_url=video_resolved.base_url,
+                video_options=video_options,
+                video_capabilities=video_resolved.capabilities or {},
+                reuse_existing_shots=True,
+            )
+
+            await db.commit()
+            logger.info(f"Background: segment {segment_id} generation completed")
+        except Exception as e:
+            logger.error(f"Background: segment {segment_id} generation failed: {e}")
+            await db.rollback()
+            # Mark as failed in a new transaction
+            try:
+                segment = await db.get(Segment, segment_id)
+                if segment:
+                    segment.status = SegmentStatus.FAILED
+                    await db.commit()
+            except Exception as mark_err:
+                logger.error(f"Background: failed to mark segment {segment_id} as failed: {mark_err}")
+
+
+async def _background_generate_shot(
+    shot_id: int,
+    project_id: int,
+    episode_number: int,
+    user_id: int,
+    video_model_config_id: Optional[int] = None,
+    resolution: Optional[str] = None,
+    aspect_ratio: Optional[str] = None,
+):
+    """Background task: generate assets and video for one shot."""
+    async with AsyncSessionLocal() as db:
+        try:
+            shot = await db.get(Shot, shot_id)
+            if not shot:
+                logger.error(f"Background: shot {shot_id} not found")
+                return
+
+            segment = await db.get(Segment, shot.segment_id)
+            if not segment:
+                logger.error(f"Background: segment for shot {shot_id} not found")
+                return
+
+            await _load_segment_shots(segment, db)
+
+            characters, scenes = await _get_project_assets(project_id, db)
+
+            body = SegmentGenerateRequest(
+                video_model_config_id=video_model_config_id,
+                resolution=resolution,
+                aspect_ratio=aspect_ratio,
+            ) if video_model_config_id or resolution or aspect_ratio else None
+            video_resolved = await _resolve_video_model(db, user_id, body)
+            video_options = _video_generation_options(video_resolved, body)
+
+            shot.shot_status = "generating"
+            segment.status = SegmentStatus.GENERATING
+
+            await video_engine.generate_shot_video_only(
+                shot=shot,
+                segment=segment,
+                characters=characters,
+                scenes=scenes,
+                project_id=project_id,
+                ep_num=episode_number,
+                video_model=video_resolved.model_id,
+                video_api_key=video_resolved.api_key,
+                video_base_url=video_resolved.base_url,
+                video_options=video_options,
+                video_capabilities=video_resolved.capabilities or {},
+            )
+
+            all_shot_videos_ready = all(s.video_url for s in segment.shots)
+            if all_shot_videos_ready:
+                await video_engine._generate_segment_video(
+                    segment,
+                    project_id,
+                    episode_number,
+                    video_model=video_resolved.model_id,
+                    video_api_key=video_resolved.api_key,
+                    video_base_url=video_resolved.base_url,
+                    video_options=video_options,
+                    video_capabilities=video_resolved.capabilities or {},
+                    reuse_existing_shots=True,
+                )
+            elif shot.video_url:
+                segment.status = SegmentStatus.PARTIAL
+
+            await db.commit()
+            logger.info(f"Background: shot {shot_id} generation completed")
+        except Exception as e:
+            import traceback
+            logger.error(f"Background: shot {shot_id} generation failed: {e}\n{traceback.format_exc()}")
+            try:
+                await db.rollback()
+            except Exception as rollback_err:
+                logger.error(f"Background: rollback after shot {shot_id} failure also failed: {rollback_err}")
+            try:
+                shot = await db.get(Shot, shot_id)
+                if shot:
+                    shot.shot_status = "failed"
+                    shot.error_message = str(e)[:500]
+                    segment = await db.get(Segment, shot.segment_id)
+                    if segment:
+                        segment.status = SegmentStatus.PARTIAL
+                    await db.commit()
+            except Exception as mark_err:
+                logger.error(f"Background: failed to mark shot {shot_id} as failed: {mark_err}")
+
+
 @router.post("/projects/{project_id}/episodes/{episode_id}/segments/{segment_id}/generate")
 async def generate_segment(
     project_id: int,
@@ -244,61 +556,148 @@ async def generate_segment(
     segment_id: int,
     user: CurrentUser,
     db: DbSession,
+    background_tasks: BackgroundTasks,
+    body: SegmentGenerateRequest | None = None,
 ):
-    """Generate assets and video for a single segment."""
+    """Generate assets and video for a single segment (async)."""
     # Video generation: charge for 5s default video per segment
     await require_credits(db, user.id, "video_default_5s", description="分镜视频生成")
-    await db.commit()  # release write lock before the AI call
+    await db.commit()  # release write lock before background task
 
     segment = await db.get(Segment, segment_id)
     if not segment:
         raise HTTPException(status_code=404, detail="Segment not found")
 
-    # Load shots
-    stmt = select(Shot).where(Shot.segment_id == segment_id).order_by(Shot.index)
-    result = await db.execute(stmt)
-    segment.shots = list(result.scalars().all())
-
-    characters, scenes = await _get_project_assets(project_id, db)
     episode = await _get_episode(project_id, episode_id, db)
-    image_resolved = await user_model_resolver.resolve(db, user.id, "image")
-    tts_resolved = await user_model_resolver.resolve(db, user.id, "tts")
-    video_resolved = await user_model_resolver.resolve(db, user.id, "video")
 
-    # Generate assets (image + audio per shot)
-    await video_engine.generate_segment_assets(
-        segment=segment,
-        characters=characters,
-        scenes=scenes,
+    # Mark as generating and commit
+    segment.status = SegmentStatus.GENERATING
+    await db.commit()
+
+    # Fire background task
+    background_tasks.add_task(
+        _background_generate_segment,
+        segment_id=segment_id,
         project_id=project_id,
-        ep_num=episode.number,
-        image_model=image_resolved.model_id,
-        image_api_key=image_resolved.api_key,
-        image_base_url=image_resolved.base_url,
-        image_options=_media_options(image_resolved),
-        tts_model=tts_resolved.model_id,
-        tts_api_key=tts_resolved.api_key,
-        tts_base_url=tts_resolved.base_url,
+        episode_number=episode.number,
+        user_id=user.id,
+        video_model_config_id=body.video_model_config_id if body else None,
+        resolution=body.resolution if body else None,
+        aspect_ratio=body.aspect_ratio if body else None,
     )
 
-    # Compose the segment video from shot assets
-    try:
-        await video_engine._generate_segment_video(
-            segment,
-            project_id,
-            episode.number,
-            video_model=video_resolved.model_id,
-            video_api_key=video_resolved.api_key,
-            video_base_url=video_resolved.base_url,
-            video_options=_media_options(video_resolved),
-        )
-    except Exception:
-        segment.status = SegmentStatus.FAILED
-        await db.flush()
-        raise
+    return {"message": "Segment generation started", "status": "generating"}
 
-    await db.flush()
-    return {"message": "Segment generated", "status": segment.status.value}
+
+@router.post("/projects/{project_id}/episodes/{episode_id}/shots/{shot_id}/generate")
+async def generate_shot(
+    project_id: int,
+    episode_id: int,
+    shot_id: int,
+    user: CurrentUser,
+    db: DbSession,
+    background_tasks: BackgroundTasks,
+    body: SegmentGenerateRequest | None = None,
+):
+    """Generate assets and video for a single shot (async)."""
+    await require_credits(db, user.id, "video_default_5s", description="分镜视频生成")
+    await db.commit()
+
+    shot = await db.get(Shot, shot_id)
+    if not shot:
+        raise HTTPException(status_code=404, detail="Shot not found")
+
+    segment = await db.get(Segment, shot.segment_id)
+    if not segment:
+        raise HTTPException(status_code=404, detail="Segment not found")
+
+    episode = await _get_episode(project_id, episode_id, db)
+
+    shot.shot_status = "generating"
+    segment.status = SegmentStatus.GENERATING
+    await db.commit()
+
+    background_tasks.add_task(
+        _background_generate_shot,
+        shot_id=shot_id,
+        project_id=project_id,
+        episode_number=episode.number,
+        user_id=user.id,
+        video_model_config_id=body.video_model_config_id if body else None,
+        resolution=body.resolution if body else None,
+        aspect_ratio=body.aspect_ratio if body else None,
+    )
+
+    return {"message": "Shot generation started", "status": "generating"}
+
+
+async def _background_regenerate_segment(
+    segment_id: int,
+    project_id: int,
+    episode_number: int,
+    user_id: int,
+    video_model_config_id: Optional[int] = None,
+    resolution: Optional[str] = None,
+    aspect_ratio: Optional[str] = None,
+):
+    """Background task: regenerate assets and video for a segment."""
+    async with AsyncSessionLocal() as db:
+        try:
+            segment = await db.get(Segment, segment_id)
+            if not segment:
+                logger.error(f"Background: segment {segment_id} not found for regenerate")
+                return
+
+            await _load_segment_shots(segment, db)
+
+            characters, scenes = await _get_project_assets(project_id, db)
+
+            body = SegmentGenerateRequest(
+                video_model_config_id=video_model_config_id,
+                resolution=resolution,
+                aspect_ratio=aspect_ratio,
+            ) if video_model_config_id or resolution or aspect_ratio else None
+            video_resolved = await _resolve_video_model(db, user_id, body)
+            video_options = _video_generation_options(video_resolved, body)
+
+            segment.status = SegmentStatus.GENERATING
+            await video_engine.generate_segment_videos_only(
+                segment=segment,
+                characters=characters,
+                scenes=scenes,
+                project_id=project_id,
+                ep_num=episode_number,
+                video_model=video_resolved.model_id,
+                video_api_key=video_resolved.api_key,
+                video_base_url=video_resolved.base_url,
+                video_options=video_options,
+                video_capabilities=video_resolved.capabilities or {},
+            )
+
+            await video_engine._generate_segment_video(
+                segment,
+                project_id,
+                episode_number,
+                video_model=video_resolved.model_id,
+                video_api_key=video_resolved.api_key,
+                video_base_url=video_resolved.base_url,
+                video_options=video_options,
+                video_capabilities=video_resolved.capabilities or {},
+                reuse_existing_shots=True,
+            )
+
+            await db.commit()
+            logger.info(f"Background: segment {segment_id} regeneration completed")
+        except Exception as e:
+            logger.error(f"Background: segment {segment_id} regeneration failed: {e}")
+            await db.rollback()
+            try:
+                segment = await db.get(Segment, segment_id)
+                if segment:
+                    segment.status = SegmentStatus.FAILED
+                    await db.commit()
+            except Exception as mark_err:
+                logger.error(f"Background: failed to mark segment {segment_id} as failed: {mark_err}")
 
 
 @router.post("/projects/{project_id}/episodes/{episode_id}/segments/{segment_id}/regenerate")
@@ -308,56 +707,34 @@ async def regenerate_segment(
     segment_id: int,
     user: CurrentUser,
     db: DbSession,
+    background_tasks: BackgroundTasks,
+    body: SegmentGenerateRequest | None = None,
 ):
-    """Regenerate a segment (assets + video)."""
+    """Regenerate a segment (assets + video) — async."""
     await require_credits(db, user.id, "video_default_5s", description="分镜视频重新生成")
-    await db.commit()  # release write lock before the AI call
+    await db.commit()  # release write lock before background task
 
     segment = await db.get(Segment, segment_id)
     if not segment:
         raise HTTPException(status_code=404, detail="Segment not found")
 
-    stmt = select(Shot).where(Shot.segment_id == segment_id).order_by(Shot.index)
-    result = await db.execute(stmt)
-    segment.shots = list(result.scalars().all())
-
-    characters, scenes = await _get_project_assets(project_id, db)
     episode = await _get_episode(project_id, episode_id, db)
-    image_resolved = await user_model_resolver.resolve(db, user.id, "image")
-    tts_resolved = await user_model_resolver.resolve(db, user.id, "tts")
-    video_resolved = await user_model_resolver.resolve(db, user.id, "video")
 
     segment.status = SegmentStatus.GENERATING
-    await video_engine.generate_segment_assets(
-        segment=segment,
-        characters=characters,
-        scenes=scenes,
-        project_id=project_id,
-        ep_num=episode.number,
-        image_model=image_resolved.model_id,
-        image_api_key=image_resolved.api_key,
-        image_base_url=image_resolved.base_url,
-        image_options=_media_options(image_resolved),
-        tts_model=tts_resolved.model_id,
-        tts_api_key=tts_resolved.api_key,
-        tts_base_url=tts_resolved.base_url,
-    )
-    try:
-        await video_engine._generate_segment_video(
-            segment,
-            project_id,
-            episode.number,
-            video_model=video_resolved.model_id,
-            video_api_key=video_resolved.api_key,
-            video_base_url=video_resolved.base_url,
-            video_options=_media_options(video_resolved),
-        )
-    except Exception:
-        segment.status = SegmentStatus.FAILED
-        raise
+    await db.commit()
 
-    await db.flush()
-    return {"message": "Segment regenerated", "status": segment.status.value}
+    background_tasks.add_task(
+        _background_regenerate_segment,
+        segment_id=segment_id,
+        project_id=project_id,
+        episode_number=episode.number,
+        user_id=user.id,
+        video_model_config_id=body.video_model_config_id if body else None,
+        resolution=body.resolution if body else None,
+        aspect_ratio=body.aspect_ratio if body else None,
+    )
+
+    return {"message": "Segment regeneration started", "status": "generating"}
 
 
 @router.post("/projects/{project_id}/episodes/{episode_id}/compose")

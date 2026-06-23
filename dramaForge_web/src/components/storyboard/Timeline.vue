@@ -114,14 +114,16 @@ function formatDuration(seconds: number) {
 
 <style scoped>
 .timeline-root {
-  height: 120px;
+  height: 126px;
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
-  border-top: 1px solid #e5e7eb;
-  background: #FDF5D6;
-  padding: 10px 22px 12px;
-  border-top-left-radius: 22px;
+  border-top: 1px solid rgba(168, 130, 60, 0.28);
+  background:
+    linear-gradient(180deg, #fff8dd 0%, #fdf0c8 100%),
+    repeating-linear-gradient(90deg, rgba(126, 83, 26, 0.03) 0, rgba(126, 83, 26, 0.03) 1px, transparent 1px, transparent 10px);
+  padding: 8px 22px 10px;
+  border-top-left-radius: 8px;
 }
 
 .timeline-toolbar {
@@ -129,7 +131,7 @@ function formatDuration(seconds: number) {
   display: flex;
   align-items: center;
   gap: 12px;
-  margin-bottom: 8px;
+  margin-bottom: 6px;
 }
 
 .timeline-play {
@@ -139,14 +141,14 @@ function formatDuration(seconds: number) {
   align-items: center;
   justify-content: center;
   border: 0;
-  border-radius: 50%;
-  background: transparent;
-  color: #111827;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.42);
+  color: #2d2515;
   cursor: pointer;
 }
 
 .timeline-play:hover {
-  background: #f1f5f9;
+  background: #fff7db;
 }
 
 .timeline-progress {
@@ -155,7 +157,7 @@ function formatDuration(seconds: number) {
   display: flex;
   align-items: center;
   gap: 8px;
-  color: #64748b;
+  color: #7c6a46;
   font-size: 11px;
 }
 
@@ -163,7 +165,7 @@ function formatDuration(seconds: number) {
   height: 2px;
   flex: 1;
   border-radius: 2px;
-  background: #cbd5e1;
+  background: rgba(168, 130, 60, 0.28);
   overflow: hidden;
 }
 
@@ -171,24 +173,24 @@ function formatDuration(seconds: number) {
   display: block;
   height: 100%;
   border-radius: inherit;
-  background: #111827;
+  background: #2d2515;
 }
 
 .timeline-multi {
   height: 26px;
   padding: 0 12px;
   border: 0;
-  border-radius: 2px;
-  background: #f1f5f9;
-  color: #475569;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.5);
+  color: #6f5c38;
   font-size: 12px;
   font-weight: 700;
   cursor: pointer;
 }
 
 .timeline-multi:hover {
-  color: #111827;
-  background: #e5e7eb;
+  color: #2d2515;
+  background: #fff7db;
 }
 
 .timeline-strip {
@@ -198,7 +200,7 @@ function formatDuration(seconds: number) {
   gap: 10px;
   overflow-x: auto;
   overflow-y: hidden;
-  padding-bottom: 4px;
+  padding: 0 1px 4px;
 }
 
 .timeline-strip::-webkit-scrollbar {
@@ -210,7 +212,7 @@ function formatDuration(seconds: number) {
 }
 
 .timeline-strip::-webkit-scrollbar-thumb {
-  background: #A89870;
+  background: #a88948;
   border-radius: 2px;
 }
 </style>

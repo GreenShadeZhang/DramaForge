@@ -89,6 +89,7 @@ class VideoService:
         model: str = None,
         size: str = None,
         seconds: str = None,
+        aspect_ratio: str = None,
         use_async: bool = None,
         fallback: bool = True,
         api_key: str = None,
@@ -98,6 +99,9 @@ class VideoService:
         headers: dict = None,
         config: dict = None,
         raw_params: dict = None,
+        first_frame: str | None = None,
+        last_frame: str | None = None,
+        reference_images: list[str] | None = None,
     ) -> VideoResponse:
         """
         Generate a video from a text prompt with auto-fallback.
@@ -119,6 +123,13 @@ class VideoService:
         """
         out = Path(output_path)
         out.parent.mkdir(parents=True, exist_ok=True)
+        raw_params = raw_params or {}
+        effective_seconds = (
+            seconds
+            or raw_params.get("seconds")
+            or raw_params.get("duration")
+            or settings.video_seconds
+        )
 
         if provider_type:
             return await self._generate_with_adapter(
@@ -126,19 +137,23 @@ class VideoService:
                 out=out,
                 model=model or settings.video_model,
                 size=size or settings.video_size,
-                seconds=seconds or settings.video_seconds,
+                seconds=effective_seconds,
+                aspect_ratio=aspect_ratio,
                 api_key=api_key,
                 base_url=base_url,
                 provider_type=provider_type,
                 auth_type=auth_type,
                 headers=headers or {},
                 config=config or {},
-                raw_params=raw_params or {},
+                raw_params=raw_params,
+                first_frame=first_frame,
+                last_frame=last_frame,
+                reference_images=reference_images or [],
             )
 
         # If explicit model given, just try that one
         if model:
-            return await self._try_model(prompt, out, model, size, seconds, use_async, api_key, base_url)
+            return await self._try_model(prompt, out, model, size, effective_seconds, use_async, api_key, base_url)
 
         # Otherwise, walk the fallback chain
         models_to_try = self._fallback_chain if fallback else [self._fallback_chain[0]]
@@ -151,7 +166,7 @@ class VideoService:
                     f"model={try_model}"
                 )
                 result = await self._try_model(
-                    prompt, out, try_model, size, seconds, use_async, api_key, base_url
+                    prompt, out, try_model, size, effective_seconds, use_async, api_key, base_url
                 )
                 if idx > 1:
                     logger.info(
@@ -230,6 +245,7 @@ class VideoService:
         model: str,
         size: str,
         seconds: str,
+        aspect_ratio: str | None,
         api_key: str | None,
         base_url: str | None,
         provider_type: str,
@@ -237,6 +253,9 @@ class VideoService:
         headers: dict,
         config: dict,
         raw_params: dict,
+        first_frame: str | None,
+        last_frame: str | None,
+        reference_images: list[str],
     ) -> VideoResponse:
         adapter = get_media_adapter(
             MediaProviderSettings(
@@ -254,7 +273,11 @@ class VideoService:
                 model_id=model,
                 size=size,
                 resolution=size,
+                aspect_ratio=aspect_ratio,
                 duration=seconds,
+                first_frame=first_frame,
+                last_frame=last_frame,
+                reference_images=reference_images,
                 raw_params=raw_params,
             )
         )

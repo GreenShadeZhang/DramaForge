@@ -608,6 +608,20 @@ class FFmpegService:
         except Exception:
             return 0.0
 
+    async def extract_first_frame(self, video_path: str, output_path: str) -> str:
+        """Extract the first frame of a video as an image."""
+        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+        cmd = [
+            self.ffmpeg, "-y",
+            "-i", video_path,
+            "-frames:v", "1",
+            "-q:v", "2",
+            output_path,
+        ]
+        await self._run(cmd)
+        logger.info(f"FFmpeg: first frame → {output_path}")
+        return output_path
+
 
 # Module-level singleton
 ffmpeg_service = FFmpegService()

@@ -13,7 +13,19 @@ BUILTIN_CATALOG = [
             {"model_id": "deepseek-v3.1", "display_name": "DeepSeek V3.1", "capability": "chat"},
             {"model_id": "gpt-image-1-mini", "display_name": "GPT Image Mini", "capability": "image", "is_default": True},
             {"model_id": "sora_image", "display_name": "Sora Image", "capability": "image"},
-            {"model_id": "veo-3.1-fast", "display_name": "Veo 3.1 Fast", "capability": "video", "is_default": True},
+            {
+                "model_id": "veo-3.1-fast",
+                "display_name": "Veo 3.1 Fast",
+                "capability": "video",
+                "is_default": True,
+                "capabilities_json": {
+                    "video_reference_images": True,
+                    "video_first_frame": True,
+                    "video_multi_reference": True,
+                    "video_max_reference_images": 3,
+                    "video_reference_roles": ["character", "scene", "style"],
+                },
+            },
             {"model_id": "seedance-2.0", "display_name": "SeeDance 2.0", "capability": "video"},
         ],
     },
@@ -48,6 +60,10 @@ BUILTIN_CATALOG = [
                 "capability": "video",
                 "is_default": True,
                 "default_params_json": {"seconds": "8", "size": "1280x720"},
+                "capabilities_json": {
+                    "video_first_frame": True,
+                    "video_reference_roles": ["character", "scene", "style"],
+                },
             },
         ],
     },
@@ -109,7 +125,16 @@ BUILTIN_CATALOG = [
         },
         "models": [
             {"model_id": "fal-ai/flux/schnell", "display_name": "Flux Schnell", "capability": "image", "is_default": True},
-            {"model_id": "fal-ai/kling-video/v1.6/standard/image-to-video", "display_name": "Kling I2V", "capability": "video", "is_default": True},
+            {
+                "model_id": "fal-ai/kling-video/v1.6/standard/image-to-video",
+                "display_name": "Kling I2V",
+                "capability": "video",
+                "is_default": True,
+                "capabilities_json": {
+                    "video_first_frame": True,
+                    "video_reference_roles": ["character", "scene"],
+                },
+            },
         ],
     },
     {
@@ -121,7 +146,16 @@ BUILTIN_CATALOG = [
         "headers_json": {"X-Runway-Version": "2024-11-06"},
         "config_json": {"submit_path": "/image_to_video", "status_path": "/tasks/{id}"},
         "models": [
-            {"model_id": "gen4_turbo", "display_name": "Gen-4 Turbo", "capability": "video", "is_default": True},
+            {
+                "model_id": "gen4_turbo",
+                "display_name": "Gen-4 Turbo",
+                "capability": "video",
+                "is_default": True,
+                "capabilities_json": {
+                    "video_first_frame": True,
+                    "video_reference_roles": ["character", "scene", "style"],
+                },
+            },
         ],
     },
     {
