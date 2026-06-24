@@ -397,10 +397,8 @@ class VideoEngine:
             model=video_model,
             api_key=video_api_key,
             base_url=video_base_url,
-            raw_params={
-                "duration": duration,
-                **((video_options or {}).get("raw_params") or {}),
-            },
+            seconds=str(duration),
+            raw_params=(video_options or {}).get("raw_params") or {},
             **{
                 k: v
                 for k, v in (video_options or {}).items()
@@ -555,10 +553,8 @@ class VideoEngine:
                         model=video_model,
                         api_key=video_api_key,
                         base_url=video_base_url,
-                        raw_params={
-                            "duration": duration,
-                            **((video_options or {}).get("raw_params") or {}),
-                        },
+                        seconds=str(duration),
+                        raw_params=(video_options or {}).get("raw_params") or {},
                         **{
                             k: v
                             for k, v in (video_options or {}).items()

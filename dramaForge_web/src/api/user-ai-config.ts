@@ -9,6 +9,7 @@ import type {
   ProviderCreate,
   ProviderUpdate,
   TestResult,
+  VideoModelPreset,
 } from '@/types/user-ai-config'
 
 export async function listProviders(): Promise<ProviderConfig[]> {
@@ -80,6 +81,11 @@ export async function getJob(id: number): Promise<MediaJob> {
 
 export async function listCatalog(): Promise<CatalogProvider[]> {
   const { data } = await apiClient.get<CatalogProvider[]>('/user-ai/catalog')
+  return data
+}
+
+export async function listVideoModelPresets(): Promise<VideoModelPreset[]> {
+  const { data } = await apiClient.get<VideoModelPreset[]>('/user-ai/video-model-presets')
   return data
 }
 

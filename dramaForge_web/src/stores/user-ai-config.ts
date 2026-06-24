@@ -7,11 +7,13 @@ import type {
   ModelConfigCreate,
   ProviderConfig,
   ProviderCreate,
+  VideoModelPreset,
 } from '@/types/user-ai-config'
 import * as aiConfigApi from '@/api/user-ai-config'
 
 export const useUserAIConfigStore = defineStore('user-ai-config', () => {
   const providers = ref<ProviderConfig[]>([])
+  const videoModelPresets = ref<VideoModelPreset[]>([])
   const defaults = ref<DefaultsMap>({})
   const jobs = ref<MediaJob[]>([])
   const loading = ref(false)
@@ -55,6 +57,10 @@ export const useUserAIConfigStore = defineStore('user-ai-config', () => {
 
   async function fetchDefaults() {
     defaults.value = await aiConfigApi.getDefaults()
+  }
+
+  async function fetchVideoModelPresets() {
+    videoModelPresets.value = await aiConfigApi.listVideoModelPresets()
   }
 
   async function addKey(data: ProviderCreate) {
@@ -142,6 +148,7 @@ export const useUserAIConfigStore = defineStore('user-ai-config', () => {
 
   return {
     providers,
+    videoModelPresets,
     keys,
     defaults,
     jobs,
@@ -150,6 +157,7 @@ export const useUserAIConfigStore = defineStore('user-ai-config', () => {
     fetchKeys,
     fetchProviders,
     fetchDefaults,
+    fetchVideoModelPresets,
     addKey,
     addProvider,
     updateKey,

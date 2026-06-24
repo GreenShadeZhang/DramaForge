@@ -94,6 +94,8 @@ class MediaGenerationService:
         if not output_path:
             output_path = str(self._output_path(job, f"job_pending.{job.capability.value}"))
 
+        adapter_config = dict(resolved.config or {})
+        adapter_config["model_capabilities"] = resolved.capabilities or {}
         adapter = get_media_adapter(
             MediaProviderSettings(
                 provider_type=resolved.provider_type or "openai_compatible",
@@ -101,7 +103,7 @@ class MediaGenerationService:
                 base_url=resolved.base_url or "",
                 api_key=resolved.api_key or "",
                 headers=resolved.headers or {},
-                config=resolved.config or {},
+                config=adapter_config,
             )
         )
         request = MediaRequest(

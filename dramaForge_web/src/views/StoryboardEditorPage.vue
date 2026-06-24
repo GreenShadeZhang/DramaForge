@@ -47,7 +47,7 @@ const modelOptions = computed(() => {
   return models.map(m => ({
     value: String(m.id),
     label: `${m.provider_name} · ${m.display_name || m.model_id}`,
-    supportsReferences: supportsVideoReferences(m.capabilities_json),
+    supportsReferences: supportsVideoReferences(effectiveVideoCapabilities(m)),
   }))
 })
 const selectedModel = ref('')
@@ -57,11 +57,21 @@ const selectedVideoModel = computed(() => {
   const id = Number(selectedModel.value)
   return aiConfigStore.modelsByType.video.find(model => model.id === id) || null
 })
+function effectiveVideoCapabilities(model: any) {
+  return { ...(model?.effective_capabilities_json || model?.capabilities_json || {}) }
+}
+const currentVideoCapabilities = computed(() => effectiveVideoCapabilities(selectedVideoModel.value))
 const currentModelSupportsReferences = computed(() =>
-  supportsVideoReferences(selectedVideoModel.value?.capabilities_json)
+  supportsVideoReferences(currentVideoCapabilities.value)
+)
+const currentModelSupportsSize = computed(() =>
+  supportsVideoSize(currentVideoCapabilities.value)
+)
+const currentModelSupportsAspectRatio = computed(() =>
+  Boolean(currentVideoCapabilities.value.video_aspect_ratio)
 )
 const referenceCapableModels = computed(() =>
-  aiConfigStore.modelsByType.video.filter(model => supportsVideoReferences(model.capabilities_json))
+  aiConfigStore.modelsByType.video.filter(model => supportsVideoReferences(effectiveVideoCapabilities(model)))
 )
 const referenceModelHint = computed(() => {
   if (!aiConfigStore.modelsByType.video.length) return '请先在设置页配置视频模型'
@@ -74,6 +84,17 @@ const referenceModelHint = computed(() => {
 function supportsVideoReferences(caps: Record<string, any> | undefined) {
   return Boolean(caps?.video_reference_images || caps?.video_first_frame || caps?.video_multi_reference)
 }
+function supportsVideoSize(caps: Record<string, any> | undefined) {
+  return Boolean(caps?.video_size || supportedVideoSizes(caps).length)
+}
+function supportedVideoSizes(caps: Record<string, any> | undefined) {
+  const value = caps?.video_supported_sizes
+  if (Array.isArray(value)) return value.map(item => String(item).trim()).filter(Boolean)
+  if (typeof value === 'string') {
+    return value.split(/[\n,，]/).map(item => item.trim()).filter(Boolean)
+  }
+  return []
+}
 
 const aspectRatioOptions = [
   { value: '9:16', label: '竖屏 9:16' },
@@ -82,6 +103,19 @@ const aspectRatioOptions = [
 ] as const
 
 const generationResolutionOptions = computed(() => {
+  if (!currentModelSupportsSize.value) return []
+  const configured = supportedVideoSizes(currentVideoCapabilities.value)
+  if (configured.length) {
+    return configured.map(value => ({ value, label: value }))
+  }
+  if (!currentModelSupportsAspectRatio.value) {
+    return [
+      { value: '720x1280', label: '720P · 720x1280' },
+      { value: '1080x1920', label: '1080P · 1080x1920' },
+      { value: '1280x720', label: '720P · 1280x720' },
+      { value: '1920x1080', label: '1080P · 1920x1080' },
+    ]
+  }
   if (selectedAspectRatio.value === '16:9') {
     return [
       { value: '1280x720', label: '720P · 1280x720' },
@@ -100,15 +134,17 @@ const generationResolutionOptions = computed(() => {
   ]
 })
 
-watch(selectedAspectRatio, () => {
-  selectedGenerationResolution.value = generationResolutionOptions.value[0]?.value || ''
-})
+watch(generationResolutionOptions, (opts) => {
+  if (!opts.find(opt => opt.value === selectedGenerationResolution.value)) {
+    selectedGenerationResolution.value = opts[0]?.value || ''
+  }
+}, { immediate: true })
 
 function videoGenerateOptions() {
   return {
     video_model_config_id: Number(selectedModel.value) || undefined,
-    resolution: selectedGenerationResolution.value || undefined,
-    aspect_ratio: selectedAspectRatio.value || undefined,
+    resolution: currentModelSupportsSize.value ? selectedGenerationResolution.value || undefined : undefined,
+    aspect_ratio: currentModelSupportsAspectRatio.value ? selectedAspectRatio.value || undefined : undefined,
   }
 }
 // Sync selectedModel when modelOptions load
@@ -670,13 +706,23 @@ watch(() => sbStore.currentSegmentIndex, () => {
           配置视频模型
         </router-link>
 
-        <select v-model="selectedAspectRatio" class="sb-model-select sb-model-select--compact" title="视频比例">
+        <select
+          v-if="currentModelSupportsAspectRatio"
+          v-model="selectedAspectRatio"
+          class="sb-model-select sb-model-select--compact"
+          title="视频比例"
+        >
           <option v-for="opt in aspectRatioOptions" :key="opt.value" :value="opt.value">
             {{ opt.label }}
           </option>
         </select>
 
-        <select v-model="selectedGenerationResolution" class="sb-model-select sb-model-select--size" title="生成尺寸">
+        <select
+          v-if="currentModelSupportsSize && generationResolutionOptions.length"
+          v-model="selectedGenerationResolution"
+          class="sb-model-select sb-model-select--size"
+          title="生成尺寸"
+        >
           <option v-for="opt in generationResolutionOptions" :key="opt.value" :value="opt.value">
             {{ opt.label }}
           </option>

@@ -14,6 +14,10 @@ from sqlalchemy.orm import selectinload
 from app.ai_hub.media_adapters import MediaProviderSettings, get_media_adapter
 from app.core.ai_config import normalize_optional_string
 from app.core.config import settings
+from app.data.video_model_presets import (
+    effective_video_model_config,
+    list_video_model_presets,
+)
 from app.core.security import CurrentUser, DbSession
 from app.models.media_generation import (
     AIModelConfig,
@@ -101,6 +105,9 @@ class ModelResponse(BaseModel):
     default_params_json: dict[str, Any]
     param_schema_json: dict[str, Any]
     capabilities_json: dict[str, Any]
+    preset_id: str | None = None
+    effective_default_params_json: dict[str, Any] = Field(default_factory=dict)
+    effective_capabilities_json: dict[str, Any] = Field(default_factory=dict)
 
     class Config:
         from_attributes = True
@@ -125,6 +132,18 @@ class ProviderTestResult(BaseModel):
     success: bool
     message: str
     models_found: int = 0
+
+
+class VideoModelPresetResponse(BaseModel):
+    preset_id: str
+    display_name: str
+    provider_types: list[str]
+    model_ids: list[str]
+    aliases: list[str]
+    default_model_id: str
+    default_params_json: dict[str, Any]
+    capabilities_json: dict[str, Any]
+    match_policy: str
 
 
 class JobCreate(BaseModel):
@@ -169,6 +188,33 @@ def _normalize_provider_type(provider_type: str) -> str:
     return normalized
 
 
+def _to_model_response(model: AIModelConfig, provider_type: str | None = None) -> ModelResponse:
+    effective = {}
+    if model.capability == MediaCapability.VIDEO:
+        effective = effective_video_model_config(
+            model_id=model.model_id,
+            provider_type=provider_type or getattr(getattr(model, "provider", None), "provider_type", None),
+            default_params_json=model.default_params_json or {},
+            capabilities_json=model.capabilities_json or {},
+            param_schema_json=model.param_schema_json or {},
+        )
+    return ModelResponse(
+        id=model.id,
+        provider_id=model.provider_id,
+        capability=model.capability,
+        model_id=model.model_id,
+        display_name=model.display_name,
+        is_default=model.is_default,
+        enabled=model.enabled,
+        default_params_json=model.default_params_json or {},
+        param_schema_json=model.param_schema_json or {},
+        capabilities_json=model.capabilities_json or {},
+        preset_id=effective.get("preset_id"),
+        effective_default_params_json=effective.get("effective_default_params_json", model.default_params_json or {}),
+        effective_capabilities_json=effective.get("effective_capabilities_json", model.capabilities_json or {}),
+    )
+
+
 def _to_provider_response(provider: AIProviderConfig) -> ProviderResponse:
     return ProviderResponse(
         id=provider.id,
@@ -181,7 +227,7 @@ def _to_provider_response(provider: AIProviderConfig) -> ProviderResponse:
         priority=provider.priority,
         headers_json=provider.headers_json or {},
         config_json=provider.config_json or {},
-        models=[ModelResponse.model_validate(m) for m in provider.models],
+        models=[_to_model_response(m, provider.provider_type) for m in provider.models],
         created_at=provider.created_at,
     )
 
@@ -215,6 +261,7 @@ async def _get_model(db: DbSession, model_id: int, user_id: int) -> AIModelConfi
         select(AIModelConfig)
         .join(AIProviderConfig)
         .where(AIModelConfig.id == model_id, AIProviderConfig.user_id == user_id)
+        .options(selectinload(AIModelConfig.provider))
     )
     result = await db.execute(stmt)
     model = result.scalar_one_or_none()
@@ -316,19 +363,19 @@ async def discover_models(provider_id: int, user: CurrentUser, db: DbSession):
 @router.get("/providers/{provider_id}/models", response_model=list[ModelResponse])
 async def list_models(provider_id: int, user: CurrentUser, db: DbSession):
     provider = await _get_provider(db, provider_id, user.id)
-    return [ModelResponse.model_validate(m) for m in provider.models]
+    return [_to_model_response(m, provider.provider_type) for m in provider.models]
 
 
 @router.post("/providers/{provider_id}/models", response_model=ModelResponse, status_code=201)
 async def create_model(provider_id: int, data: ModelCreate, user: CurrentUser, db: DbSession):
-    await _get_provider(db, provider_id, user.id)
+    provider = await _get_provider(db, provider_id, user.id)
     model = AIModelConfig(provider_id=provider_id, **data.model_dump())
     db.add(model)
     await db.flush()
     await db.refresh(model)
     if model.is_default:
         await _unset_other_defaults(db, model)
-    return ModelResponse.model_validate(model)
+    return _to_model_response(model, provider.provider_type)
 
 
 @router.put("/models/{model_id}", response_model=ModelResponse)
@@ -342,7 +389,7 @@ async def update_model(model_id: int, data: ModelUpdate, user: CurrentUser, db: 
     if model.is_default:
         await _unset_other_defaults(db, model)
     await db.refresh(model)
-    return ModelResponse.model_validate(model)
+    return _to_model_response(model)
 
 
 @router.delete("/models/{model_id}", status_code=204)
@@ -359,7 +406,7 @@ async def set_default_model(model_id: int, user: CurrentUser, db: DbSession):
     await _unset_other_defaults(db, model)
     await db.flush()
     await db.refresh(model)
-    return ModelResponse.model_validate(model)
+    return _to_model_response(model)
 
 
 async def _unset_other_defaults(db: DbSession, model: AIModelConfig) -> None:
@@ -463,6 +510,11 @@ async def get_catalog():
     from app.data.model_catalog import BUILTIN_CATALOG
 
     return BUILTIN_CATALOG
+
+
+@router.get("/video-model-presets", response_model=list[VideoModelPresetResponse])
+async def get_video_model_presets():
+    return list_video_model_presets()
 
 
 @router.post("/catalog/import", response_model=ProviderResponse, status_code=201)

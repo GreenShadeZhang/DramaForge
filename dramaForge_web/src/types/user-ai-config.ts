@@ -14,6 +14,9 @@ export interface ModelConfig {
   default_params_json: Record<string, any>
   param_schema_json: Record<string, any>
   capabilities_json: Record<string, any>
+  preset_id?: string | null
+  effective_default_params_json?: Record<string, any>
+  effective_capabilities_json?: Record<string, any>
 }
 
 export interface ProviderConfig {
@@ -73,6 +76,18 @@ export interface TestResult {
   models_found: number
 }
 
+export interface VideoModelPreset {
+  preset_id: string
+  display_name: string
+  provider_types: string[]
+  model_ids: string[]
+  aliases: string[]
+  default_model_id: string
+  default_params_json: Record<string, any>
+  capabilities_json: Record<string, any>
+  match_policy: string
+}
+
 export interface DefaultsMap {
   [capability: string]: {
     model_id: string
@@ -111,5 +126,8 @@ export interface CatalogProvider {
     display_name: string
     capability: MediaCapability
     is_default?: boolean
+    default_params_json?: Record<string, any>
+    param_schema_json?: Record<string, any>
+    capabilities_json?: Record<string, any>
   }>
 }

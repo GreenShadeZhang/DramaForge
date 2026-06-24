@@ -73,9 +73,208 @@ def _extract_urls(text: str, extensions: str = r"png|jpg|jpeg|webp|gif|mp4|mov|w
     return list(dict.fromkeys(markdown + bare))
 
 
-def _is_seedance_model(model_id: str | None) -> bool:
-    """Check if the model is a SeeDance (火山引擎) model that doesn't support aspect_ratio."""
-    return bool(model_id and model_id.startswith("seedance"))
+VIDEO_OPTION_KEYS = {
+    "aspect_ratio",
+    "duration",
+    "first_frame",
+    "first_frame_url",
+    "image_url",
+    "input_reference",
+    "last_frame",
+    "last_frame_url",
+    "reference_image_urls",
+    "reference_images",
+    "resolution",
+    "seconds",
+    "size",
+}
+
+
+def _video_capabilities(config: dict[str, Any] | None) -> dict[str, Any]:
+    config = config or {}
+    capabilities = config.get("model_capabilities")
+    return capabilities if isinstance(capabilities, dict) else {}
+
+
+def _video_supported_params(config: dict[str, Any] | None) -> set[str]:
+    config = config or {}
+    caps = _video_capabilities(config)
+    values = config.get("video_supported_params") or caps.get("video_supported_params") or []
+    if isinstance(values, str):
+        values = re.split(r"[\n,，]", values)
+    if not isinstance(values, list):
+        return set()
+    return {str(value).strip().lower() for value in values if str(value).strip()}
+
+
+def _video_flag(config: dict[str, Any] | None, *keys: str) -> bool:
+    config = config or {}
+    caps = _video_capabilities(config)
+    return any(bool(config.get(key)) or bool(caps.get(key)) for key in keys)
+
+
+def _supports_video_param(config: dict[str, Any] | None, *names: str) -> bool:
+    supported_params = _video_supported_params(config)
+    if any(name in supported_params for name in names):
+        return True
+    return any(
+        _video_flag(config, f"video_{name}", f"supports_{name}", f"supports_video_{name}")
+        for name in names
+    )
+
+
+def _configured_video_param_name(config: dict[str, Any] | None, key: str, default: str) -> str:
+    config = config or {}
+    caps = _video_capabilities(config)
+    configured_param = caps.get(f"video_{key}_param") or config.get(f"video_{key}_param")
+    if isinstance(configured_param, str):
+        configured_param = configured_param.strip()
+        if configured_param:
+            return configured_param
+    return default
+
+
+def _video_value_text(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        numeric = float(value)
+        if numeric.is_integer():
+            return str(int(numeric))
+    return str(value)
+
+
+def _video_supported_values(config: dict[str, Any] | None, key: str, model_id: str | None = None) -> list[str]:
+    config = config or {}
+    caps = _video_capabilities(config)
+    value = caps.get(key) or config.get(key) or []
+    if isinstance(value, str):
+        value = re.split(r"[\n,，]", value)
+    if not isinstance(value, list):
+        return []
+    return [str(item).strip() for item in value if str(item).strip()]
+
+
+def _video_value_allowed(config: dict[str, Any] | None, key: str, value: Any, model_id: str | None = None) -> bool:
+    text = _video_value_text(value)
+    if text is None:
+        return True
+    supported_values = _video_supported_values(config, key, model_id)
+    return not supported_values or text in supported_values
+
+
+def _supports_video_size(config: dict[str, Any] | None, model_id: str | None) -> bool:
+    return _supports_video_param(config, "size", "resolution")
+
+
+def _supports_video_duration(config: dict[str, Any] | None, model_id: str | None) -> bool:
+    return _supports_video_param(config, "seconds", "duration")
+
+
+def _supports_video_first_frame(config: dict[str, Any] | None, model_id: str | None = None) -> bool:
+    return _supports_video_param(config, "first_frame") or _video_flag(config, "video_first_frame")
+
+
+def _supports_video_reference_images(config: dict[str, Any] | None) -> bool:
+    return (
+        _supports_video_param(config, "reference_images")
+        or _video_flag(config, "video_reference_images", "video_multi_reference")
+    )
+
+
+def _raw_video_param_allowed(key: str, value: Any, config: dict[str, Any] | None, model_id: str | None) -> bool:
+    allowed = {
+        "size": _supports_video_size(config, model_id),
+        "resolution": _supports_video_size(config, model_id),
+        "seconds": _supports_video_duration(config, model_id),
+        "duration": _supports_video_duration(config, model_id),
+        "aspect_ratio": bool(_video_aspect_ratio_param(config)),
+        "first_frame": _supports_video_first_frame(config, model_id),
+        "first_frame_url": _supports_video_first_frame(config, model_id),
+        "image_url": _supports_video_first_frame(config, model_id),
+        "input_reference": _supports_video_first_frame(config, model_id),
+        "last_frame": _supports_video_first_frame(config, model_id),
+        "last_frame_url": _supports_video_first_frame(config, model_id),
+        "reference_images": _supports_video_reference_images(config),
+        "reference_image_urls": _supports_video_reference_images(config),
+    }
+    if not allowed.get(key):
+        return False
+    if key in {"size", "resolution"}:
+        return _video_value_allowed(config, "video_supported_sizes", value, model_id)
+    if key in {"seconds", "duration"}:
+        return _video_value_allowed(config, "video_supported_durations", value, model_id)
+    return True
+
+
+def _filter_raw_video_params(raw_params: dict[str, Any], config: dict[str, Any] | None, model_id: str | None) -> dict[str, Any]:
+    filtered = {}
+    for key, value in raw_params.items():
+        if key not in VIDEO_OPTION_KEYS or _raw_video_param_allowed(key, value, config, model_id):
+            filtered[key] = value
+        elif value not in (None, "", []):
+            logger.info(
+                f"Media adapter: dropping unsupported video param {key} "
+                f"for model={model_id}"
+            )
+    return filtered
+
+
+def _video_aspect_ratio_param(config: dict[str, Any] | None) -> str | None:
+    if _supports_video_param(config, "aspect_ratio"):
+        return _configured_video_param_name(config, "aspect_ratio", "aspect_ratio")
+    return None
+
+
+def _video_duration_param(config: dict[str, Any] | None) -> str:
+    return _configured_video_param_name(config, "duration", "seconds")
+
+
+def _video_size_param(config: dict[str, Any] | None) -> str:
+    return _configured_video_param_name(config, "size", "size")
+
+
+def _normalize_video_seconds(value: int | float | str | None, model_id: str | None) -> str | None:
+    if value is None:
+        return None
+    return _video_value_text(value)
+
+
+def _normalize_video_size(value: Any, config: dict[str, Any] | None, model_id: str | None) -> str | None:
+    text = _video_value_text(value)
+    if text is None:
+        return None
+    if _video_value_allowed(config, "video_supported_sizes", text, model_id):
+        return text
+    logger.info(
+        f"Media adapter: dropping unsupported video size={text} "
+        f"for model={model_id}"
+    )
+    return None
+
+
+def _normalize_video_duration(value: Any, config: dict[str, Any] | None, model_id: str | None) -> str | None:
+    text = _normalize_video_seconds(value, model_id)
+    if text is None:
+        return None
+    supported_values = _video_supported_values(config, "video_supported_durations", model_id)
+    if not supported_values or text in supported_values:
+        return text
+    try:
+        requested = float(text)
+        numeric_values = sorted(float(item) for item in supported_values)
+    except (TypeError, ValueError):
+        numeric_values = []
+    for allowed in numeric_values:
+        if requested <= allowed:
+            return _video_value_text(allowed)
+    if numeric_values:
+        return _video_value_text(numeric_values[-1])
+    logger.info(
+        f"Media adapter: dropping unsupported video duration={text} "
+        f"for model={model_id}"
+    )
+    return None
 
 
 class BaseMediaAdapter:
@@ -219,7 +418,11 @@ class OpenAICompatibleAdapter(BaseMediaAdapter):
                 ) from image_error
 
     async def submit_video(self, request: MediaRequest) -> MediaResult:
-        raw_params = dict(request.raw_params or {})
+        raw_params = _filter_raw_video_params(
+            dict(request.raw_params or {}),
+            self.settings.config,
+            request.model_id,
+        )
         raw_seconds = raw_params.pop("seconds", None)
         raw_duration = raw_params.pop("duration", None)
         raw_size = raw_params.pop("size", None)
@@ -230,21 +433,51 @@ class OpenAICompatibleAdapter(BaseMediaAdapter):
         payload = {"model": request.model_id, "prompt": request.prompt, **raw_params}
         effective_size = request.size or request.resolution or raw_size or raw_resolution
         if effective_size:
-            payload["size"] = effective_size
+            if _supports_video_size(self.settings.config, request.model_id):
+                normalized_size = _normalize_video_size(
+                    effective_size,
+                    self.settings.config,
+                    request.model_id,
+                )
+                if normalized_size:
+                    payload[_video_size_param(self.settings.config)] = normalized_size
+            else:
+                logger.info(
+                    f"OpenAI-compatible adapter: dropping size={effective_size} "
+                    f"for model={request.model_id} because the video endpoint does not "
+                    "opt in to a size parameter"
+                )
         effective_aspect = request.aspect_ratio or raw_aspect_ratio
         if effective_aspect:
-            if _is_seedance_model(request.model_id):
+            aspect_ratio_param = _video_aspect_ratio_param(self.settings.config)
+            if aspect_ratio_param:
+                payload.setdefault(aspect_ratio_param, effective_aspect)
+            else:
                 logger.info(
                     f"OpenAI-compatible adapter: dropping aspect_ratio={effective_aspect} "
-                    f"for model={request.model_id} (SeeDance does not support aspect_ratio)"
+                    f"for model={request.model_id} because the video endpoint does not "
+                    "opt in to an aspect ratio parameter"
                 )
-            else:
-                payload.setdefault("aspect_ratio", effective_aspect)
         effective_seconds = request.duration or raw_seconds or raw_duration
         if effective_seconds is not None:
-            payload["seconds"] = str(effective_seconds)
-        if request.first_frame:
+            if _supports_video_duration(self.settings.config, request.model_id):
+                normalized_duration = _normalize_video_duration(
+                    effective_seconds,
+                    self.settings.config,
+                    request.model_id,
+                )
+                if normalized_duration:
+                    payload[_video_duration_param(self.settings.config)] = normalized_duration
+            else:
+                logger.info(
+                    f"OpenAI-compatible adapter: dropping duration={effective_seconds} "
+                    f"for model={request.model_id} because the video endpoint does not "
+                    "opt in to a duration parameter"
+                )
+        if request.first_frame and _supports_video_first_frame(self.settings.config, request.model_id):
             payload["input_reference"] = {"image_url": request.first_frame}
+        if request.reference_images and _supports_video_reference_images(self.settings.config):
+            payload["reference_images"] = request.reference_images
         try:
             data = await self._post("/videos", payload)
             task_id = data.get("id") or data.get("task_id")
@@ -339,15 +572,37 @@ class ReplicateAdapter(BaseMediaAdapter):
         return await self._submit_prediction(request, "video")
 
     async def _submit_prediction(self, request: MediaRequest, asset_type: str) -> MediaResult:
-        input_payload = {"prompt": request.prompt, **request.raw_params}
-        for key, value in {
-            "image": request.first_frame or (request.input_images[0] if request.input_images else None),
-            "duration": request.duration,
-            "aspect_ratio": request.aspect_ratio,
-            "seed": request.seed,
-        }.items():
-            if value is not None:
-                input_payload[key] = value
+        raw_params = _filter_raw_video_params(
+            dict(request.raw_params or {}),
+            self.settings.config,
+            request.model_id,
+        ) if asset_type == "video" else dict(request.raw_params or {})
+        input_payload = {"prompt": request.prompt, **raw_params}
+        if asset_type == "video":
+            if request.first_frame and _supports_video_first_frame(self.settings.config, request.model_id):
+                input_payload["image"] = request.first_frame
+            if request.duration is not None and _supports_video_duration(self.settings.config, request.model_id):
+                normalized_duration = _normalize_video_duration(
+                    request.duration,
+                    self.settings.config,
+                    request.model_id,
+                )
+                if normalized_duration:
+                    input_payload[_video_duration_param(self.settings.config)] = normalized_duration
+            aspect_ratio_param = _video_aspect_ratio_param(self.settings.config)
+            if request.aspect_ratio and aspect_ratio_param:
+                input_payload[aspect_ratio_param] = request.aspect_ratio
+            if request.seed is not None:
+                input_payload["seed"] = request.seed
+        else:
+            for key, value in {
+                "image": request.first_frame or (request.input_images[0] if request.input_images else None),
+                "duration": request.duration,
+                "aspect_ratio": request.aspect_ratio,
+                "seed": request.seed,
+            }.items():
+                if value is not None:
+                    input_payload[key] = value
         if "/" in request.model_id and ":" not in request.model_id:
             data = await self._post(f"/models/{request.model_id}/predictions", {"input": input_payload})
         else:
@@ -367,18 +622,54 @@ class FalAdapter(BaseMediaAdapter):
         return await self._submit(request, "video")
 
     async def _submit(self, request: MediaRequest, asset_type: str) -> MediaResult:
-        payload = {"prompt": request.prompt, **request.raw_params}
-        for key, value in {
-            "image_url": request.first_frame,
-            "aspect_ratio": request.aspect_ratio,
-            "resolution": request.resolution,
-            "duration": request.duration,
-            "fps": request.fps,
-            "seed": request.seed,
-            "quality": request.quality,
-        }.items():
-            if value not in (None, "", []):
-                payload[key] = value
+        raw_params = _filter_raw_video_params(
+            dict(request.raw_params or {}),
+            self.settings.config,
+            request.model_id,
+        ) if asset_type == "video" else dict(request.raw_params or {})
+        payload = {"prompt": request.prompt, **raw_params}
+        if asset_type == "video":
+            if request.first_frame and _supports_video_first_frame(self.settings.config, request.model_id):
+                payload["image_url"] = request.first_frame
+            aspect_ratio_param = _video_aspect_ratio_param(self.settings.config)
+            if request.aspect_ratio and aspect_ratio_param:
+                payload[aspect_ratio_param] = request.aspect_ratio
+            effective_size = request.size or request.resolution
+            if effective_size and _supports_video_size(self.settings.config, request.model_id):
+                normalized_size = _normalize_video_size(
+                    effective_size,
+                    self.settings.config,
+                    request.model_id,
+                )
+                if normalized_size:
+                    payload[_video_size_param(self.settings.config)] = normalized_size
+            if request.duration is not None and _supports_video_duration(self.settings.config, request.model_id):
+                normalized_duration = _normalize_video_duration(
+                    request.duration,
+                    self.settings.config,
+                    request.model_id,
+                )
+                if normalized_duration:
+                    payload[_video_duration_param(self.settings.config)] = normalized_duration
+            for key, value in {
+                "fps": request.fps,
+                "seed": request.seed,
+                "quality": request.quality,
+            }.items():
+                if value not in (None, "", []):
+                    payload[key] = value
+        else:
+            for key, value in {
+                "image_url": request.first_frame,
+                "aspect_ratio": request.aspect_ratio,
+                "resolution": request.resolution,
+                "duration": request.duration,
+                "fps": request.fps,
+                "seed": request.seed,
+                "quality": request.quality,
+            }.items():
+                if value not in (None, "", []):
+                    payload[key] = value
         endpoint = self.settings.config.get("submit_path") or f"/{request.model_id}"
         data = await self._post(endpoint, payload)
         return _task_or_asset_result(data, asset_type)
@@ -399,26 +690,64 @@ class TaskEndpointAdapter(BaseMediaAdapter):
         return await self._submit(request, "video")
 
     async def _submit(self, request: MediaRequest, asset_type: str) -> MediaResult:
+        raw_params = _filter_raw_video_params(
+            dict(request.raw_params or {}),
+            self.settings.config,
+            request.model_id,
+        ) if asset_type == "video" else dict(request.raw_params or {})
         payload = {
             "model": request.model_id,
             "prompt": request.prompt,
-            **request.raw_params,
+            **raw_params,
         }
-        for key, value in {
-            "size": request.size,
-            "aspect_ratio": request.aspect_ratio,
-            "resolution": request.resolution,
-            "duration": request.duration,
-            "fps": request.fps,
-            "seed": request.seed,
-            "quality": request.quality,
-            "image_url": request.first_frame or (request.input_images[0] if request.input_images else None),
-            "first_frame_url": request.first_frame,
-            "last_frame_url": request.last_frame,
-            "reference_image_urls": request.reference_images or None,
-        }.items():
-            if value not in (None, [], ""):
-                payload[key] = value
+        if asset_type == "video":
+            effective_size = request.size or request.resolution
+            if effective_size and _supports_video_size(self.settings.config, request.model_id):
+                normalized_size = _normalize_video_size(
+                    effective_size,
+                    self.settings.config,
+                    request.model_id,
+                )
+                if normalized_size:
+                    payload[_video_size_param(self.settings.config)] = normalized_size
+            aspect_ratio_param = _video_aspect_ratio_param(self.settings.config)
+            if request.aspect_ratio and aspect_ratio_param:
+                payload[aspect_ratio_param] = request.aspect_ratio
+            if request.duration is not None and _supports_video_duration(self.settings.config, request.model_id):
+                normalized_duration = _normalize_video_duration(
+                    request.duration,
+                    self.settings.config,
+                    request.model_id,
+                )
+                if normalized_duration:
+                    payload[_video_duration_param(self.settings.config)] = normalized_duration
+            for key, value in {
+                "fps": request.fps,
+                "seed": request.seed,
+                "quality": request.quality,
+                "image_url": request.first_frame if _supports_video_first_frame(self.settings.config, request.model_id) else None,
+                "first_frame_url": request.first_frame if _supports_video_first_frame(self.settings.config, request.model_id) else None,
+                "last_frame_url": request.last_frame if _supports_video_first_frame(self.settings.config, request.model_id) else None,
+                "reference_image_urls": request.reference_images if _supports_video_reference_images(self.settings.config) else None,
+            }.items():
+                if value not in (None, [], ""):
+                    payload[key] = value
+        else:
+            for key, value in {
+                "size": request.size,
+                "aspect_ratio": request.aspect_ratio,
+                "resolution": request.resolution,
+                "duration": request.duration,
+                "fps": request.fps,
+                "seed": request.seed,
+                "quality": request.quality,
+                "image_url": request.first_frame or (request.input_images[0] if request.input_images else None),
+                "first_frame_url": request.first_frame,
+                "last_frame_url": request.last_frame,
+                "reference_image_urls": request.reference_images or None,
+            }.items():
+                if value not in (None, [], ""):
+                    payload[key] = value
         submit_path = self.settings.config.get("submit_path", "/generations")
         data = await self._post(submit_path, payload)
         return _task_or_asset_result(data, asset_type)

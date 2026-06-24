@@ -2,7 +2,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useUserAIConfigStore } from '@/stores/user-ai-config'
-import type { MediaCapability, ModelConfig, ProviderConfig } from '@/types/user-ai-config'
+import type { MediaCapability, ModelConfig, ProviderConfig, VideoModelPreset } from '@/types/user-ai-config'
 
 const router = useRouter()
 const aiStore = useUserAIConfigStore()
@@ -45,6 +45,32 @@ const testResult = ref<{ success: boolean; message: string } | null>(null)
 const saving = ref(false)
 const testing = ref(false)
 const toast = ref<{ show: boolean; msg: string; type: 'ok' | 'err' }>({ show: false, msg: '', type: 'ok' })
+const videoPresetIdKey = 'video_preset_id'
+let videoModelRowSeq = 0
+
+interface VideoModelRow {
+  key: number
+  existing_id?: number
+  model_id: string
+  display_name: string
+  preset_id: string
+  show_video_advanced: boolean
+  default_params_json: Record<string, any>
+  video_size: boolean
+  video_supported_sizes: string
+  video_size_param: string
+  video_duration: boolean
+  video_supported_durations: string
+  video_duration_param: string
+  video_aspect_ratio: boolean
+  video_aspect_ratio_param: string
+  video_first_frame: boolean
+  video_multi_reference: boolean
+  video_max_reference_images: number
+  video_role_character: boolean
+  video_role_scene: boolean
+  video_role_style: boolean
+}
 
 const providerForm = ref({
   name: '',
@@ -55,6 +81,16 @@ const providerForm = ref({
   priority: 0,
   enabled: true,
   model_ids: '',
+  video_models: [] as VideoModelRow[],
+  show_video_advanced: false,
+  video_size: false,
+  video_supported_sizes: '',
+  video_size_param: 'size',
+  video_duration: false,
+  video_supported_durations: '',
+  video_duration_param: 'seconds',
+  video_aspect_ratio: false,
+  video_aspect_ratio_param: 'aspect_ratio',
   video_first_frame: false,
   video_multi_reference: false,
   video_max_reference_images: 3,
@@ -73,7 +109,7 @@ const filteredProviders = computed(() =>
 )
 
 onMounted(async () => {
-  await Promise.all([aiStore.fetchProviders(), aiStore.fetchDefaults()])
+  await Promise.all([aiStore.fetchProviders(), aiStore.fetchDefaults(), aiStore.fetchVideoModelPresets()])
 })
 
 function showToast(msg: string, type: 'ok' | 'err' = 'ok') {
@@ -96,6 +132,99 @@ function normalizedModels() {
     .filter(Boolean)
 }
 
+function textList(value: unknown) {
+  if (Array.isArray(value)) return value.map(item => String(item)).join('\n')
+  if (typeof value === 'string') return value
+  return ''
+}
+
+function normalizedList(value: string) {
+  return value
+    .split(/[\n,，]/)
+    .map((item) => item.trim())
+    .filter(Boolean)
+}
+
+function capabilityFields(caps: Record<string, any> | undefined) {
+  const value = caps || {}
+  return {
+    video_size: Boolean(value.video_size || value.video_supported_sizes),
+    video_supported_sizes: textList(value.video_supported_sizes),
+    video_size_param: String(value.video_size_param || 'size'),
+    video_duration: Boolean(value.video_duration || value.video_supported_durations),
+    video_supported_durations: textList(value.video_supported_durations),
+    video_duration_param: String(value.video_duration_param || 'seconds'),
+    video_aspect_ratio: Boolean(value.video_aspect_ratio),
+    video_aspect_ratio_param: String(value.video_aspect_ratio_param || 'aspect_ratio'),
+    video_first_frame: Boolean(value.video_first_frame),
+    video_multi_reference: Boolean(value.video_multi_reference || value.video_reference_images),
+    video_max_reference_images: Number(value.video_max_reference_images || 3),
+    video_role_character: Array.isArray(value.video_reference_roles) ? value.video_reference_roles.includes('character') : false,
+    video_role_scene: Array.isArray(value.video_reference_roles) ? value.video_reference_roles.includes('scene') : false,
+    video_role_style: Array.isArray(value.video_reference_roles) ? value.video_reference_roles.includes('style') : false,
+  }
+}
+
+function blankVideoModelRow(modelId = '', preset?: VideoModelPreset | null): VideoModelRow {
+  const caps = capabilityFields(preset?.capabilities_json || {})
+  return {
+    key: ++videoModelRowSeq,
+    model_id: modelId || preset?.default_model_id || '',
+    display_name: preset?.display_name || modelId || '',
+    preset_id: preset?.preset_id || '',
+    show_video_advanced: false,
+    default_params_json: { ...(preset?.default_params_json || {}) },
+    ...caps,
+  }
+}
+
+function videoModelRowFromModel(model: ModelConfig): VideoModelRow {
+  const presetId = String(model.preset_id || model.param_schema_json?.[videoPresetIdKey] || '')
+  return {
+    ...blankVideoModelRow(model.model_id),
+    existing_id: model.id,
+    model_id: model.model_id,
+    display_name: model.display_name || model.model_id,
+    preset_id: presetId,
+    default_params_json: { ...(model.effective_default_params_json || model.default_params_json || {}) },
+    ...capabilityFields(model.effective_capabilities_json || model.capabilities_json || {}),
+  }
+}
+
+function findVideoPreset(presetId: string) {
+  return aiStore.videoModelPresets.find((preset) => preset.preset_id === presetId) || null
+}
+
+function applyVideoPreset(row: VideoModelRow) {
+  const preset = findVideoPreset(row.preset_id)
+  if (!preset) return
+  row.model_id = preset.default_model_id || preset.model_ids[0] || row.model_id
+  row.display_name = preset.display_name
+  row.default_params_json = { ...preset.default_params_json }
+  Object.assign(row, capabilityFields(preset.capabilities_json))
+}
+
+function addVideoModelRow() {
+  providerForm.value.video_models.push(blankVideoModelRow())
+}
+
+function removeVideoModelRow(rowKey: number) {
+  providerForm.value.video_models = providerForm.value.video_models.filter((row) => row.key !== rowKey)
+  if (providerForm.value.video_models.length === 0) {
+    providerForm.value.video_models.push(blankVideoModelRow())
+  }
+}
+
+function videoCapabilitySummary(row: VideoModelRow) {
+  const parts = []
+  if (row.video_size || normalizedList(row.video_supported_sizes).length) parts.push('尺寸')
+  if (row.video_duration || normalizedList(row.video_supported_durations).length) parts.push('时长')
+  if (row.video_aspect_ratio) parts.push('比例')
+  if (row.video_first_frame) parts.push('首帧')
+  if (row.video_multi_reference) parts.push('多参考图')
+  return parts.length ? parts.join('、') : '基础 prompt 生成'
+}
+
 function openAddProvider() {
   editingProvider.value = null
   testResult.value = null
@@ -108,6 +237,16 @@ function openAddProvider() {
     priority: 0,
     enabled: true,
     model_ids: '',
+    video_models: [blankVideoModelRow()],
+    show_video_advanced: false,
+    video_size: false,
+    video_supported_sizes: '',
+    video_size_param: 'size',
+    video_duration: false,
+    video_supported_durations: '',
+    video_duration_param: 'seconds',
+    video_aspect_ratio: false,
+    video_aspect_ratio_param: 'aspect_ratio',
     video_first_frame: false,
     video_multi_reference: false,
     video_max_reference_images: 3,
@@ -121,6 +260,7 @@ function openAddProvider() {
 function openEditProvider(provider: ProviderConfig) {
   const firstModel = modelsForCapability(provider, activeCapability.value)[0]
   const caps = firstModel?.capabilities_json || {}
+  const videoModels = modelsForCapability(provider, 'video').map(videoModelRowFromModel)
   editingProvider.value = provider
   testResult.value = null
   providerForm.value = {
@@ -132,6 +272,16 @@ function openEditProvider(provider: ProviderConfig) {
     priority: provider.priority,
     enabled: provider.enabled,
     model_ids: modelsForCapability(provider, activeCapability.value).map((model) => model.model_id).join('\n'),
+    video_models: videoModels.length ? videoModels : [blankVideoModelRow()],
+    show_video_advanced: false,
+    video_size: Boolean(caps.video_size || caps.video_supported_sizes),
+    video_supported_sizes: textList(caps.video_supported_sizes),
+    video_size_param: String(caps.video_size_param || 'size'),
+    video_duration: Boolean(caps.video_duration || caps.video_supported_durations),
+    video_supported_durations: textList(caps.video_supported_durations),
+    video_duration_param: String(caps.video_duration_param || 'seconds'),
+    video_aspect_ratio: Boolean(caps.video_aspect_ratio),
+    video_aspect_ratio_param: String(caps.video_aspect_ratio_param || 'aspect_ratio'),
     video_first_frame: Boolean(caps.video_first_frame),
     video_multi_reference: Boolean(caps.video_multi_reference || caps.video_reference_images),
     video_max_reference_images: Number(caps.video_max_reference_images || 3),
@@ -142,26 +292,45 @@ function openEditProvider(provider: ProviderConfig) {
   showProviderForm.value = true
 }
 
-function videoCapabilities() {
-  if (activeCapability.value !== 'video') return {}
+function videoCapabilities(row: VideoModelRow) {
   const roles = [
-    providerForm.value.video_role_character ? 'character' : '',
-    providerForm.value.video_role_scene ? 'scene' : '',
-    providerForm.value.video_role_style ? 'style' : '',
+    row.video_role_character ? 'character' : '',
+    row.video_role_scene ? 'scene' : '',
+    row.video_role_style ? 'style' : '',
   ].filter(Boolean)
-  const supportsReference = providerForm.value.video_first_frame || providerForm.value.video_multi_reference
-  if (!supportsReference) return {}
-  return {
-    video_reference_images: providerForm.value.video_multi_reference,
-    video_first_frame: providerForm.value.video_first_frame,
-    video_multi_reference: providerForm.value.video_multi_reference,
-    video_max_reference_images: Number(providerForm.value.video_max_reference_images) || 1,
-    video_reference_roles: roles.length ? roles : ['character', 'scene'],
+  const supportedSizes = normalizedList(row.video_supported_sizes)
+  const supportedDurations = normalizedList(row.video_supported_durations)
+  const supportsReference = row.video_first_frame || row.video_multi_reference
+  const capabilities: Record<string, any> = {}
+  if (row.video_size || supportedSizes.length) {
+    capabilities.video_size = true
+    capabilities.video_supported_sizes = supportedSizes
+    capabilities.video_size_param = row.video_size_param.trim() || 'size'
   }
+  if (row.video_duration || supportedDurations.length) {
+    capabilities.video_duration = true
+    capabilities.video_supported_durations = supportedDurations
+    capabilities.video_duration_param = row.video_duration_param.trim() || 'seconds'
+  }
+  if (row.video_aspect_ratio) {
+    capabilities.video_aspect_ratio = true
+    capabilities.video_aspect_ratio_param = row.video_aspect_ratio_param.trim() || 'aspect_ratio'
+  }
+  if (supportsReference) {
+    capabilities.video_reference_images = row.video_multi_reference
+    capabilities.video_first_frame = row.video_first_frame
+    capabilities.video_multi_reference = row.video_multi_reference
+    capabilities.video_max_reference_images = Number(row.video_max_reference_images) || 1
+    capabilities.video_reference_roles = roles.length ? roles : ['character', 'scene']
+  }
+  return capabilities
 }
 
 async function saveProvider() {
-  const modelIds = normalizedModels()
+  const videoRows = providerForm.value.video_models
+    .map((row) => ({ ...row, model_id: row.model_id.trim() }))
+    .filter((row) => row.model_id)
+  const modelIds = activeCapability.value === 'video' ? videoRows.map((row) => row.model_id) : normalizedModels()
   if (!providerForm.value.name.trim()) return showToast('请填写配置名称', 'err')
   if (!providerForm.value.base_url.trim()) return showToast('请填写接口地址', 'err')
   if (!editingProvider.value && !providerForm.value.api_key.trim()) return showToast('请填写 API Key', 'err')
@@ -185,24 +354,45 @@ async function saveProvider() {
       ? await aiStore.updateProvider(editingProvider.value.id, payload)
       : await aiStore.addProvider(payload)
 
-    const capabilities = videoCapabilities()
-    const existing = new Set(modelsForCapability(provider, activeCapability.value).map((model) => model.model_id))
-    for (const modelId of modelIds) {
-      if (existing.has(modelId)) continue
-      await aiStore.addModel(provider.id, {
-        capability: activeCapability.value,
-        model_id: modelId,
-        display_name: modelId,
-        is_default: modelIds.length === 1 && !aiStore.defaults[activeCapability.value],
-        default_params_json: {},
-        capabilities_json: capabilities,
-        param_schema_json: {},
-      })
-    }
     if (activeCapability.value === 'video') {
-      const currentModels = modelsForCapability(provider, 'video').filter((model) => modelIds.includes(model.model_id))
-      for (const model of currentModels) {
-        await aiStore.updateModel(model.id, { capabilities_json: capabilities })
+      const existingModels = modelsForCapability(provider, 'video')
+      const keptIds = new Set<number>()
+      for (const row of videoRows) {
+        const existingModel = row.existing_id
+          ? existingModels.find((model) => model.id === row.existing_id)
+          : existingModels.find((model) => model.model_id === row.model_id)
+        const payload = {
+          capability: 'video' as MediaCapability,
+          model_id: row.model_id,
+          display_name: row.display_name.trim() || row.model_id,
+          is_default: existingModel?.is_default ?? (videoRows.length === 1 && !aiStore.defaults.video),
+          default_params_json: row.default_params_json || {},
+          capabilities_json: videoCapabilities(row),
+          param_schema_json: row.preset_id ? { [videoPresetIdKey]: row.preset_id } : {},
+        }
+        const savedModel = existingModel
+          ? await aiStore.updateModel(existingModel.id, payload)
+          : await aiStore.addModel(provider.id, payload)
+        keptIds.add(savedModel.id)
+      }
+      for (const model of existingModels) {
+        if (!keptIds.has(model.id)) {
+          await aiStore.removeModel(model.id)
+        }
+      }
+    } else {
+      const existing = new Set(modelsForCapability(provider, activeCapability.value).map((model) => model.model_id))
+      for (const modelId of modelIds) {
+        if (existing.has(modelId)) continue
+        await aiStore.addModel(provider.id, {
+          capability: activeCapability.value,
+          model_id: modelId,
+          display_name: modelId,
+          is_default: modelIds.length === 1 && !aiStore.defaults[activeCapability.value],
+          default_params_json: {},
+          capabilities_json: {},
+          param_schema_json: {},
+        })
       }
     }
 
@@ -372,7 +562,7 @@ function decreasePriority() {
                 </div>
               </div>
 
-              <label class="form-row form-row-required">
+              <label v-if="activeCapability !== 'video'" class="form-row form-row-required">
                 <span>支持的模型</span>
                 <textarea
                   v-model="providerForm.model_ids"
@@ -382,26 +572,88 @@ function decreasePriority() {
               </label>
 
               <div v-if="activeCapability === 'video'" class="form-row video-capability-row">
-                <span>参考图能力</span>
-                <div class="video-capability-box">
-                  <label class="switch-row">
-                    <input v-model="providerForm.video_first_frame" type="checkbox" />
-                    <span>支持首帧图</span>
-                  </label>
-                  <label class="switch-row">
-                    <input v-model="providerForm.video_multi_reference" type="checkbox" />
-                    <span>支持多参考图</span>
-                  </label>
-                  <label class="inline-field">
-                    <span>最大参考图</span>
-                    <input v-model.number="providerForm.video_max_reference_images" type="number" min="1" max="8" />
-                  </label>
-                  <div class="role-checks">
-                    <label><input v-model="providerForm.video_role_character" type="checkbox" /> 角色</label>
-                    <label><input v-model="providerForm.video_role_scene" type="checkbox" /> 场景</label>
-                    <label><input v-model="providerForm.video_role_style" type="checkbox" /> 风格</label>
-                  </div>
-                  <small>自定义视频模型默认不启用参考图；确认供应商支持后再开启。</small>
+                <span>视频模型</span>
+                <div class="video-model-editor">
+                  <article v-for="row in providerForm.video_models" :key="row.key" class="video-model-card">
+                    <div class="video-model-main">
+                      <input v-model="row.model_id" class="video-model-id" placeholder="模型 ID，例如 sora-2" />
+                      <select v-model="row.preset_id" class="video-preset-select" @change="applyVideoPreset(row)">
+                        <option value="">自定义 / 不使用预设</option>
+                        <option v-for="preset in aiStore.videoModelPresets" :key="preset.preset_id" :value="preset.preset_id">
+                          {{ preset.display_name }}
+                        </option>
+                      </select>
+                      <button type="button" class="row-delete-button" @click="removeVideoModelRow(row.key)">删除</button>
+                    </div>
+                    <div class="video-capability-summary">
+                      <span>{{ row.preset_id ? findVideoPreset(row.preset_id)?.display_name : '自定义模型' }}</span>
+                      <strong>{{ videoCapabilitySummary(row) }}</strong>
+                    </div>
+                    <button
+                      type="button"
+                      class="advanced-toggle"
+                      @click="row.show_video_advanced = !row.show_video_advanced"
+                    >
+                      {{ row.show_video_advanced ? '收起高级配置' : '展开高级配置' }}
+                    </button>
+
+                    <div v-if="row.show_video_advanced" class="video-advanced-grid">
+                      <label class="switch-row">
+                        <input v-model="row.video_size" type="checkbox" />
+                        <span>支持尺寸参数</span>
+                      </label>
+                      <label class="inline-field">
+                        <span>尺寸参数名</span>
+                        <input v-model="row.video_size_param" />
+                      </label>
+                      <label class="stack-field">
+                        <span>支持尺寸</span>
+                        <textarea v-model="row.video_supported_sizes" rows="3" placeholder="720x1280&#10;1280x720" />
+                      </label>
+
+                      <label class="switch-row">
+                        <input v-model="row.video_duration" type="checkbox" />
+                        <span>支持时长参数</span>
+                      </label>
+                      <label class="inline-field">
+                        <span>时长参数名</span>
+                        <input v-model="row.video_duration_param" />
+                      </label>
+                      <label class="stack-field">
+                        <span>支持时长</span>
+                        <textarea v-model="row.video_supported_durations" rows="3" placeholder="4&#10;8&#10;12" />
+                      </label>
+
+                      <label class="switch-row">
+                        <input v-model="row.video_aspect_ratio" type="checkbox" />
+                        <span>支持比例参数</span>
+                      </label>
+                      <label class="inline-field">
+                        <span>比例参数名</span>
+                        <input v-model="row.video_aspect_ratio_param" />
+                      </label>
+
+                      <label class="switch-row">
+                        <input v-model="row.video_first_frame" type="checkbox" />
+                        <span>支持首帧图</span>
+                      </label>
+                      <label class="switch-row">
+                        <input v-model="row.video_multi_reference" type="checkbox" />
+                        <span>支持多参考图</span>
+                      </label>
+                      <label class="inline-field">
+                        <span>最大参考图</span>
+                        <input v-model.number="row.video_max_reference_images" type="number" min="1" max="8" />
+                      </label>
+                      <div class="role-checks">
+                        <label><input v-model="row.video_role_character" type="checkbox" /> 角色</label>
+                        <label><input v-model="row.video_role_scene" type="checkbox" /> 场景</label>
+                        <label><input v-model="row.video_role_style" type="checkbox" /> 风格</label>
+                      </div>
+                    </div>
+                  </article>
+                  <button type="button" class="add-row-button" @click="addVideoModelRow">添加视频模型</button>
+                  <small>选择预设可自动填充模型 ID 与已知能力；未知模型默认只传提示词。</small>
                 </div>
               </div>
 
@@ -510,8 +762,96 @@ function decreasePriority() {
   background: rgba(255, 255, 255, 0.5);
 }
 
+.video-model-editor {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.video-model-card {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid #e5e6eb;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.58);
+}
+
+.video-model-main {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) minmax(180px, 220px) 64px;
+  gap: 8px;
+  align-items: center;
+}
+
+.video-model-id,
+.video-preset-select {
+  min-width: 0;
+  height: 32px;
+  padding: 0 9px;
+  border: 1px solid #d1d5db;
+  border-radius: 5px;
+  background: #fff;
+  color: #111827;
+  font-size: 13px;
+}
+
+.row-delete-button,
+.add-row-button {
+  height: 30px;
+  border: 1px solid #d1d5db;
+  border-radius: 5px;
+  background: #fff;
+  color: #374151;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.row-delete-button {
+  color: #b42318;
+}
+
+.add-row-button {
+  width: fit-content;
+  padding: 0 10px;
+}
+
+.video-capability-summary {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  color: #6b7280;
+  font-size: 12px;
+}
+
+.video-capability-summary strong {
+  color: #1f2937;
+  font-weight: 600;
+}
+
+.advanced-toggle {
+  width: fit-content;
+  height: 30px;
+  padding: 0 10px;
+  border: 1px solid #d1d5db;
+  border-radius: 5px;
+  background: #fff;
+  color: #374151;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.video-advanced-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 14px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid #e5e7eb;
+}
+
 .inline-field,
-.role-checks {
+.role-checks,
+.stack-field {
   display: flex;
   align-items: center;
   gap: 10px;
@@ -519,13 +859,28 @@ function decreasePriority() {
   font-size: 12px;
 }
 
+.stack-field {
+  grid-column: 1 / -1;
+  align-items: flex-start;
+}
+
 .inline-field input {
-  width: 70px;
+  width: 120px;
   height: 28px;
   padding: 0 8px;
   border: 1px solid #d1d5db;
   border-radius: 5px;
   background: #fff;
+}
+
+.stack-field textarea {
+  flex: 1;
+  min-width: 0;
+  padding: 8px;
+  border: 1px solid #d1d5db;
+  border-radius: 5px;
+  background: #fff;
+  resize: vertical;
 }
 
 .role-checks label {

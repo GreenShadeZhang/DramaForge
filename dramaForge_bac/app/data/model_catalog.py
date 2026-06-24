@@ -1,5 +1,7 @@
 """Built-in media provider templates."""
 
+from app.data.video_model_presets import catalog_video_model
+
 BUILTIN_CATALOG = [
     {
         "name": "laozhang.ai Relay",
@@ -13,20 +15,8 @@ BUILTIN_CATALOG = [
             {"model_id": "deepseek-v3.1", "display_name": "DeepSeek V3.1", "capability": "chat"},
             {"model_id": "gpt-image-1-mini", "display_name": "GPT Image Mini", "capability": "image", "is_default": True},
             {"model_id": "sora_image", "display_name": "Sora Image", "capability": "image"},
-            {
-                "model_id": "veo-3.1-fast",
-                "display_name": "Veo 3.1 Fast",
-                "capability": "video",
-                "is_default": True,
-                "capabilities_json": {
-                    "video_reference_images": True,
-                    "video_first_frame": True,
-                    "video_multi_reference": True,
-                    "video_max_reference_images": 3,
-                    "video_reference_roles": ["character", "scene", "style"],
-                },
-            },
-            {"model_id": "seedance-2.0", "display_name": "SeeDance 2.0", "capability": "video"},
+            catalog_video_model("laozhang/veo-3.1-fast", is_default=True),
+            catalog_video_model("seedance-2.0"),
         ],
     },
     {
@@ -54,17 +44,7 @@ BUILTIN_CATALOG = [
                 "is_default": True,
                 "default_params_json": {"response_format": "b64_json"},
             },
-            {
-                "model_id": "sora-2",
-                "display_name": "Sora 2",
-                "capability": "video",
-                "is_default": True,
-                "default_params_json": {"seconds": "8", "size": "1280x720"},
-                "capabilities_json": {
-                    "video_first_frame": True,
-                    "video_reference_roles": ["character", "scene", "style"],
-                },
-            },
+            catalog_video_model("openai/sora-2", display_name="Sora 2", is_default=True),
         ],
     },
     {
@@ -109,7 +89,7 @@ BUILTIN_CATALOG = [
         "priority": 40,
         "models": [
             {"model_id": "black-forest-labs/flux-schnell", "display_name": "Flux Schnell", "capability": "image", "is_default": True},
-            {"model_id": "kwaivgi/kling-v1.6-standard", "display_name": "Kling Video", "capability": "video", "is_default": True},
+            catalog_video_model("replicate/kling-standard", display_name="Kling Video", is_default=True),
         ],
     },
     {
@@ -125,16 +105,7 @@ BUILTIN_CATALOG = [
         },
         "models": [
             {"model_id": "fal-ai/flux/schnell", "display_name": "Flux Schnell", "capability": "image", "is_default": True},
-            {
-                "model_id": "fal-ai/kling-video/v1.6/standard/image-to-video",
-                "display_name": "Kling I2V",
-                "capability": "video",
-                "is_default": True,
-                "capabilities_json": {
-                    "video_first_frame": True,
-                    "video_reference_roles": ["character", "scene"],
-                },
-            },
+            catalog_video_model("fal/kling-i2v", display_name="Kling I2V", is_default=True),
         ],
     },
     {
@@ -146,16 +117,7 @@ BUILTIN_CATALOG = [
         "headers_json": {"X-Runway-Version": "2024-11-06"},
         "config_json": {"submit_path": "/image_to_video", "status_path": "/tasks/{id}"},
         "models": [
-            {
-                "model_id": "gen4_turbo",
-                "display_name": "Gen-4 Turbo",
-                "capability": "video",
-                "is_default": True,
-                "capabilities_json": {
-                    "video_first_frame": True,
-                    "video_reference_roles": ["character", "scene", "style"],
-                },
-            },
+            catalog_video_model("runway/gen4_turbo", display_name="Gen-4 Turbo", is_default=True),
         ],
     },
     {
@@ -166,7 +128,7 @@ BUILTIN_CATALOG = [
         "priority": 55,
         "config_json": {"submit_path": "/generations", "status_path": "/generations/{id}"},
         "models": [
-            {"model_id": "ray-2", "display_name": "Ray 2", "capability": "video", "is_default": True},
+            catalog_video_model("luma/ray-2", display_name="Ray 2", is_default=True),
         ],
     },
     {
@@ -178,7 +140,7 @@ BUILTIN_CATALOG = [
         "config_json": {"submit_path": "/contents/generations/tasks", "status_path": "/contents/generations/tasks/{id}"},
         "models": [
             {"model_id": "seedream-4-0", "display_name": "Seedream", "capability": "image", "is_default": True},
-            {"model_id": "seedance-1-0-pro", "display_name": "Seedance", "capability": "video", "is_default": True},
+            catalog_video_model("seedance-1-0-pro", display_name="Seedance", is_default=True),
         ],
     },
     {
@@ -191,7 +153,7 @@ BUILTIN_CATALOG = [
         "config_json": {"submit_path": "/services/aigc/text2image/image-synthesis", "status_path": "/tasks/{id}"},
         "models": [
             {"model_id": "wanx2.1-t2i-turbo", "display_name": "Wanx T2I Turbo", "capability": "image", "is_default": True},
-            {"model_id": "wan2.1-t2v-turbo", "display_name": "Wan T2V Turbo", "capability": "video", "is_default": True},
+            catalog_video_model("dashscope/wan2.1-t2v-turbo", display_name="Wan T2V Turbo", is_default=True),
         ],
     },
     {
@@ -202,7 +164,7 @@ BUILTIN_CATALOG = [
         "priority": 70,
         "models": [
             {"model_id": "imagen-4.0-generate-preview-06-06", "display_name": "Imagen 4", "capability": "image", "is_default": True},
-            {"model_id": "veo-3.0-generate-preview", "display_name": "Veo 3", "capability": "video", "is_default": True},
+            catalog_video_model("google/veo-3.0-generate-preview", display_name="Veo 3", is_default=True),
         ],
     },
 ]

@@ -1,11 +1,14 @@
 import tempfile
 import unittest
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from app.ai_hub.media_adapters import (
     MediaProviderSettings,
+    MediaRequest,
     OpenAICompatibleAdapter,
     ReplicateAdapter,
+    TaskEndpointAdapter,
     get_media_adapter,
     _normalize_status,
     _task_or_asset_result,
@@ -22,7 +25,44 @@ from app.core.ai_config import (
     normalize_api_base_url,
     normalize_capabilities,
 )
+from app.api.v2.storyboard import (
+    SegmentGenerateRequest,
+    _video_generation_options,
+)
 from app.data.model_catalog import BUILTIN_CATALOG
+from app.data.video_model_presets import effective_video_model_config, list_video_model_presets
+
+
+class CaptureOpenAICompatibleAdapter(OpenAICompatibleAdapter):
+    def __init__(self, config=None):
+        super().__init__(
+            MediaProviderSettings(
+                provider_type="openai_compatible",
+                base_url="https://example.test/v1",
+                config=config or {},
+            )
+        )
+        self.payload = None
+
+    async def _post(self, path, payload):
+        self.payload = payload
+        return {"id": "task-1", "status": "queued"}
+
+
+class CaptureTaskEndpointAdapter(TaskEndpointAdapter):
+    def __init__(self, config=None):
+        super().__init__(
+            MediaProviderSettings(
+                provider_type="runway",
+                base_url="https://example.test",
+                config=config or {},
+            )
+        )
+        self.payload = None
+
+    async def _post(self, path, payload):
+        self.payload = payload
+        return {"id": "task-1", "status": "queued"}
 
 
 class AIConfigTests(unittest.TestCase):
@@ -58,6 +98,43 @@ class AIConfigTests(unittest.TestCase):
             for model in provider.get("models", [])
         }
         self.assertEqual(capabilities, {"chat", "image", "video"})
+
+    def test_builtin_video_catalog_models_resolve_effective_preset_capabilities(self):
+        video_models = [
+            (provider["provider_type"], model)
+            for provider in BUILTIN_CATALOG
+            for model in provider.get("models", [])
+            if model["capability"] == "video"
+        ]
+        self.assertTrue(video_models)
+
+        for provider_type, model in video_models:
+            effective = effective_video_model_config(
+                model_id=model["model_id"],
+                provider_type=provider_type,
+                default_params_json=model.get("default_params_json", {}),
+                capabilities_json=model.get("capabilities_json", {}),
+                param_schema_json=model.get("param_schema_json", {}),
+            )
+            self.assertIsNotNone(effective["preset_id"])
+
+        sora_model = next(model for provider_type, model in video_models if model["model_id"] == "sora-2")
+        sora_effective = effective_video_model_config(
+            model_id=sora_model["model_id"],
+            provider_type="openai_native",
+            default_params_json=sora_model.get("default_params_json", {}),
+            capabilities_json=sora_model.get("capabilities_json", {}),
+            param_schema_json=sora_model.get("param_schema_json", {}),
+        )
+        self.assertEqual(sora_effective["effective_default_params_json"]["size"], "720x1280")
+        self.assertEqual(sora_effective["effective_capabilities_json"]["video_size_param"], "size")
+
+    def test_video_model_presets_are_available_for_settings_ui(self):
+        presets = list_video_model_presets()
+        preset_ids = {preset["preset_id"] for preset in presets}
+        self.assertIn("openai/sora-2", preset_ids)
+        self.assertIn("openai/sora-2-pro", preset_ids)
+        self.assertIn("runway/gen4_turbo", preset_ids)
 
     def test_chat_completions_image_models(self):
         self.assertTrue(_is_chat_completions_image_model(" sora_image "))
@@ -147,6 +224,260 @@ class ImageServiceRoutingTests(unittest.IsolatedAsyncioTestCase):
         generate_chat.assert_awaited_once()
         generate_b64.assert_not_called()
         generate_url.assert_not_called()
+
+
+class OpenAICompatibleVideoPayloadTests(unittest.IsolatedAsyncioTestCase):
+    async def test_sora_video_payload_uses_size_seconds_and_drops_aspect_ratio(self):
+        effective = effective_video_model_config(model_id="sora-2", provider_type="openai_native")
+        adapter = CaptureOpenAICompatibleAdapter(
+            config={"model_capabilities": effective["effective_capabilities_json"]}
+        )
+
+        await adapter.submit_video(
+            MediaRequest(
+                prompt="test",
+                model_id="sora-2",
+                size="720x1280",
+                duration=5,
+                aspect_ratio="9:16",
+                first_frame="https://cdn.example.test/frame.png",
+                raw_params={"aspect_ratio": "9:16", "duration": 5, "size": "720x1280"},
+            )
+        )
+
+        self.assertNotIn("aspect_ratio", adapter.payload)
+        self.assertEqual(adapter.payload["size"], "720x1280")
+        self.assertEqual(adapter.payload["seconds"], "8")
+        self.assertEqual(adapter.payload["input_reference"], {"image_url": "https://cdn.example.test/frame.png"})
+
+    async def test_sora_2_pro_supports_1080p_size(self):
+        effective = effective_video_model_config(model_id="sora-2-pro", provider_type="openai_native")
+        adapter = CaptureOpenAICompatibleAdapter(
+            config={"model_capabilities": effective["effective_capabilities_json"]}
+        )
+
+        await adapter.submit_video(
+            MediaRequest(
+                prompt="test",
+                model_id="sora-2-pro",
+                size="1920x1080",
+                duration=20,
+            )
+        )
+
+        self.assertEqual(adapter.payload["size"], "1920x1080")
+        self.assertEqual(adapter.payload["seconds"], "20")
+
+    async def test_sora_2_does_not_accept_sora_2_pro_only_size(self):
+        effective = effective_video_model_config(model_id="sora-2", provider_type="openai_native")
+        adapter = CaptureOpenAICompatibleAdapter(
+            config={"model_capabilities": effective["effective_capabilities_json"]}
+        )
+
+        await adapter.submit_video(
+            MediaRequest(
+                prompt="test",
+                model_id="sora-2",
+                size="1920x1080",
+                duration=8,
+            )
+        )
+
+        self.assertNotIn("size", adapter.payload)
+        self.assertEqual(adapter.payload["seconds"], "8")
+
+    async def test_sora_2_character_does_not_match_sora_2_preset_by_prefix(self):
+        effective = effective_video_model_config(model_id="sora-2-character", provider_type="openai_compatible")
+        adapter = CaptureOpenAICompatibleAdapter(
+            config={"model_capabilities": effective["effective_capabilities_json"]}
+        )
+
+        await adapter.submit_video(
+            MediaRequest(
+                prompt="test",
+                model_id="sora-2-character",
+                size="720x1280",
+                duration=8,
+                aspect_ratio="9:16",
+            )
+        )
+
+        self.assertIsNone(effective["preset_id"])
+        self.assertEqual(adapter.payload, {"model": "sora-2-character", "prompt": "test"})
+
+    async def test_unknown_video_payload_drops_optional_controls_by_default(self):
+        adapter = CaptureOpenAICompatibleAdapter()
+
+        await adapter.submit_video(
+            MediaRequest(
+                prompt="test",
+                model_id="custom-video",
+                size="720x1280",
+                duration=5,
+                aspect_ratio="9:16",
+                first_frame="https://cdn.example.test/frame.png",
+                reference_images=["https://cdn.example.test/ref.png"],
+                raw_params={
+                    "foo": "bar",
+                    "size": "720x1280",
+                    "seconds": "5",
+                    "aspect_ratio": "9:16",
+                    "reference_images": ["https://cdn.example.test/ref.png"],
+                },
+            )
+        )
+
+        self.assertEqual(adapter.payload, {"model": "custom-video", "prompt": "test", "foo": "bar"})
+
+    async def test_video_payload_can_opt_in_to_aspect_ratio_param(self):
+        adapter = CaptureOpenAICompatibleAdapter(
+            config={
+                "model_capabilities": {
+                    "video_size": True,
+                    "video_size_param": "resolution",
+                    "video_duration": True,
+                    "video_duration_param": "duration",
+                    "video_aspect_ratio": True,
+                    "video_aspect_ratio_param": "ratio",
+                    "video_first_frame": True,
+                    "video_multi_reference": True,
+                }
+            }
+        )
+
+        await adapter.submit_video(
+            MediaRequest(
+                prompt="test",
+                model_id="custom-video",
+                size="1280x720",
+                duration=6,
+                aspect_ratio="16:9",
+                first_frame="https://cdn.example.test/frame.png",
+                reference_images=["https://cdn.example.test/ref.png"],
+                raw_params={"aspect_ratio": "16:9"},
+            )
+        )
+
+        self.assertNotIn("aspect_ratio", adapter.payload)
+        self.assertEqual(adapter.payload["resolution"], "1280x720")
+        self.assertEqual(adapter.payload["duration"], "6")
+        self.assertEqual(adapter.payload["ratio"], "16:9")
+        self.assertEqual(adapter.payload["input_reference"], {"image_url": "https://cdn.example.test/frame.png"})
+        self.assertEqual(adapter.payload["reference_images"], ["https://cdn.example.test/ref.png"])
+
+
+class TaskEndpointPayloadTests(unittest.IsolatedAsyncioTestCase):
+    async def test_video_payload_uses_configured_param_names(self):
+        adapter = CaptureTaskEndpointAdapter(
+            config={
+                "model_capabilities": {
+                    "video_size": True,
+                    "video_size_param": "resolution",
+                    "video_duration": True,
+                    "video_duration_param": "duration_seconds",
+                    "video_aspect_ratio": True,
+                    "video_aspect_ratio_param": "ratio",
+                }
+            }
+        )
+
+        await adapter.submit_video(
+            MediaRequest(
+                prompt="test",
+                model_id="custom-video",
+                size="1280x720",
+                duration=6,
+                aspect_ratio="16:9",
+            )
+        )
+
+        self.assertEqual(adapter.payload["resolution"], "1280x720")
+        self.assertEqual(adapter.payload["duration_seconds"], "6")
+        self.assertEqual(adapter.payload["ratio"], "16:9")
+        self.assertNotIn("size", adapter.payload)
+        self.assertNotIn("duration", adapter.payload)
+        self.assertNotIn("aspect_ratio", adapter.payload)
+
+    async def test_image_payload_is_not_filtered_by_video_capabilities(self):
+        adapter = CaptureTaskEndpointAdapter()
+
+        await adapter.submit_image(
+            MediaRequest(
+                prompt="test",
+                model_id="image-model",
+                size="1024x1024",
+                aspect_ratio="1:1",
+                first_frame="https://cdn.example.test/input.png",
+            )
+        )
+
+        self.assertEqual(adapter.payload["size"], "1024x1024")
+        self.assertEqual(adapter.payload["aspect_ratio"], "1:1")
+        self.assertEqual(adapter.payload["image_url"], "https://cdn.example.test/input.png")
+
+
+class VideoGenerationOptionsTests(unittest.TestCase):
+    def test_unknown_model_does_not_forward_user_size_or_aspect_ratio(self):
+        resolved = SimpleNamespace(
+            provider_type="openai_compatible",
+            auth_type="bearer",
+            headers={},
+            config={},
+            raw_params={},
+            capabilities={},
+            model_id="custom-video",
+        )
+
+        options = _video_generation_options(
+            resolved,
+            SegmentGenerateRequest(resolution="720x1280", aspect_ratio="9:16"),
+        )
+
+        self.assertNotIn("size", options)
+        self.assertNotIn("aspect_ratio", options)
+
+    def test_sora_preset_forwards_supported_size_but_not_aspect_ratio(self):
+        effective = effective_video_model_config(model_id="sora-2", provider_type="openai_native")
+        resolved = SimpleNamespace(
+            provider_type="openai_native",
+            auth_type="bearer",
+            headers={},
+            config={},
+            raw_params=effective["effective_default_params_json"],
+            capabilities=effective["effective_capabilities_json"],
+            model_id="sora-2",
+        )
+
+        options = _video_generation_options(
+            resolved,
+            SegmentGenerateRequest(resolution="720x1280", aspect_ratio="9:16"),
+        )
+
+        self.assertEqual(options["size"], "720x1280")
+        self.assertNotIn("aspect_ratio", options)
+
+    def test_declared_model_capabilities_forward_supported_generation_controls(self):
+        resolved = SimpleNamespace(
+            provider_type="openai_compatible",
+            auth_type="bearer",
+            headers={},
+            config={},
+            raw_params={},
+            capabilities={
+                "video_size": True,
+                "video_supported_sizes": ["720x1280"],
+                "video_aspect_ratio": True,
+            },
+            model_id="custom-video",
+        )
+
+        options = _video_generation_options(
+            resolved,
+            SegmentGenerateRequest(resolution="720x1280", aspect_ratio="9:16"),
+        )
+
+        self.assertEqual(options["size"], "720x1280")
+        self.assertEqual(options["aspect_ratio"], "9:16")
 
 
 if __name__ == "__main__":

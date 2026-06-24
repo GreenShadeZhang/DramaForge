@@ -14,6 +14,7 @@ from app.core.ai_config import (
     normalize_optional_string,
 )
 from app.core.config import settings
+from app.data.video_model_presets import effective_video_model_config
 from app.models.media_generation import AIModelConfig, AIProviderConfig, MediaCapability
 from app.models.user_ai_config import UserAPIKey, UserModelConfig
 
@@ -128,6 +129,14 @@ class UserModelResolver:
 
     def _fallback_media_model(self, capability_type: str) -> ResolvedModel:
         fallback_model = settings.image_model if capability_type == "image" else settings.video_model
+        effective = (
+            effective_video_model_config(
+                model_id=fallback_model,
+                provider_type="openai_compatible",
+            )
+            if capability_type == "video"
+            else {}
+        )
         return ResolvedModel(
             api_key=normalize_optional_string(settings.laozhang_api_key),
             base_url=normalize_api_base_url(settings.laozhang_base_url),
@@ -136,8 +145,8 @@ class UserModelResolver:
             auth_type="bearer",
             headers={},
             config={},
-            raw_params={},
-            capabilities={},
+            raw_params=effective.get("effective_default_params_json", {}),
+            capabilities=effective.get("effective_capabilities_json", {}),
         )
 
     def _to_resolved_media(
@@ -145,6 +154,18 @@ class UserModelResolver:
         model: AIModelConfig,
         provider: AIProviderConfig,
     ) -> ResolvedModel:
+        raw_params = model.default_params_json or {}
+        capabilities = model.capabilities_json or {}
+        if model.capability == MediaCapability.VIDEO:
+            effective = effective_video_model_config(
+                model_id=model.model_id,
+                provider_type=provider.provider_type,
+                default_params_json=raw_params,
+                capabilities_json=capabilities,
+                param_schema_json=model.param_schema_json or {},
+            )
+            raw_params = effective["effective_default_params_json"]
+            capabilities = effective["effective_capabilities_json"]
         return ResolvedModel(
             api_key=normalize_optional_string(provider.api_key),
             base_url=normalize_optional_string(provider.base_url),
@@ -153,8 +174,8 @@ class UserModelResolver:
             auth_type=normalize_optional_string(provider.auth_type) or "bearer",
             headers=provider.headers_json or {},
             config=provider.config_json or {},
-            raw_params=model.default_params_json or {},
-            capabilities=model.capabilities_json or {},
+            raw_params=raw_params,
+            capabilities=capabilities,
             provider_id=provider.id,
         )
 

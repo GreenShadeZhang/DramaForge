@@ -110,13 +110,39 @@ router = APIRouter()
 def _media_options(resolved) -> dict:
     if not resolved.provider_type:
         return {}
+    config = dict(resolved.config or {})
+    config["model_capabilities"] = dict(resolved.capabilities or {})
     return {
         "provider_type": resolved.provider_type,
         "auth_type": resolved.auth_type or "bearer",
         "headers": resolved.headers or {},
-        "config": resolved.config or {},
+        "config": config,
         "raw_params": resolved.raw_params or {},
     }
+
+
+def _list_capability(caps: dict, key: str) -> list[str]:
+    value = caps.get(key) or []
+    if isinstance(value, str):
+        value = value.replace("\n", ",").split(",")
+    if not isinstance(value, list):
+        return []
+    return [str(item).strip() for item in value if str(item).strip()]
+
+
+def _supported_video_sizes(caps: dict, model_id: str | None) -> list[str]:
+    configured = _list_capability(caps, "video_supported_sizes")
+    if configured:
+        return configured
+    return []
+
+
+def _supports_video_size(caps: dict, model_id: str | None) -> bool:
+    return bool(caps.get("video_size") or _list_capability(caps, "video_supported_sizes"))
+
+
+def _supports_video_aspect_ratio(caps: dict) -> bool:
+    return bool(caps.get("video_aspect_ratio"))
 
 
 def _video_generation_options(resolved, body: SegmentGenerateRequest | None) -> dict:
@@ -124,14 +150,24 @@ def _video_generation_options(resolved, body: SegmentGenerateRequest | None) -> 
     if not body:
         return options
 
-    raw_params = dict(options.get("raw_params") or {})
+    caps = dict(resolved.capabilities or {})
     if body.resolution:
-        options["size"] = body.resolution
-        raw_params.setdefault("resolution", body.resolution)
+        supported_sizes = _supported_video_sizes(caps, resolved.model_id)
+        if _supports_video_size(caps, resolved.model_id) and (not supported_sizes or body.resolution in supported_sizes):
+            options["size"] = body.resolution
+        else:
+            logger.info(
+                f"Video generation: dropping resolution={body.resolution} "
+                f"for model={resolved.model_id}; model does not declare support"
+            )
     if body.aspect_ratio:
-        options["aspect_ratio"] = body.aspect_ratio
-        raw_params.setdefault("aspect_ratio", body.aspect_ratio)
-    options["raw_params"] = raw_params
+        if _supports_video_aspect_ratio(caps):
+            options["aspect_ratio"] = body.aspect_ratio
+        else:
+            logger.info(
+                f"Video generation: dropping aspect_ratio={body.aspect_ratio} "
+                f"for model={resolved.model_id}; model does not declare support"
+            )
     return options
 
 
