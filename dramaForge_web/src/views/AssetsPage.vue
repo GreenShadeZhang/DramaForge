@@ -461,20 +461,6 @@ async function handleApprove() {
             <span class="canvas-char-name">{{ canvasChar.name }}</span>
             <span class="canvas-char-role">· {{ canvasChar.role }} · {{ totalCanvasImages }} 张形象图</span>
           </div>
-          <div class="canvas-header-actions">
-            <button class="btn btn-outline btn-sm" @click="openRegenCharacter(canvasChar!)">
-              <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M1.5 7A5.5 5.5 0 0112.17 5.5M12.5 7A5.5 5.5 0 011.83 8.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><path d="M12.17 5.5H9.5M1.83 8.5H4.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
-              AI生成形象
-            </button>
-            <button class="btn btn-outline btn-sm" @click="openCharEdit(canvasChar!)">
-              <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M10 2.5l1.5 1.5L4.5 11H3V9.5L10 2.5z" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
-              编辑形象描述
-            </button>
-            <button class="btn btn-primary btn-sm" @click="charFileInput?.click()" :disabled="!!uploadingCharId">
-              <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><line x1="7" y1="2" x2="7" y2="12" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><line x1="2" y1="7" x2="12" y2="7" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
-              上传
-            </button>
-          </div>
         </div>
 
         <!-- Canvas area -->
