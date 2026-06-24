@@ -70,6 +70,12 @@ async function handleOptimize() {
 function handleGenerate() {
   emit('confirm', { prompt: editedPrompt.value.trim() || optimizedPrompt.value.trim() })
 }
+
+// ── Generate directly without optimization ──
+function handleDirectGenerate() {
+  const prompt = [visualDesc.value, extraGuidance.value].filter(Boolean).join('. ')
+  emit('confirm', { prompt })
+}
 </script>
 
 <template>
@@ -121,21 +127,33 @@ function handleGenerate() {
                 />
               </div>
 
-              <!-- Optimize button (Step 1 → Step 2) -->
-              <button
-                class="reg-optimize-btn"
-                :disabled="optimizing || (!visualDesc && !extraGuidance)"
-                @click="handleOptimize"
-              >
-                <svg v-if="optimizing" class="animate-spin" width="14" height="14" viewBox="0 0 14 14" fill="none">
-                  <circle cx="7" cy="7" r="5.5" stroke="currentColor" stroke-width="1.5" stroke-dasharray="24 8" stroke-linecap="round"/>
-                </svg>
-                <svg v-else width="14" height="14" viewBox="0 0 14 14" fill="none">
-                  <path d="M1.5 7A5.5 5.5 0 0112.17 5.5M12.5 7A5.5 5.5 0 011.83 8.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
-                  <path d="M12.17 5.5H9.5M1.83 8.5H4.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
-                </svg>
-                {{ optimizing ? 'AI 正在优化提示词...' : 'AI 优化提示词' }}
-              </button>
+              <!-- Optimize + Direct generate buttons -->
+              <div class="reg-action-row">
+                <button
+                  class="reg-optimize-btn"
+                  :disabled="optimizing || (!visualDesc && !extraGuidance)"
+                  @click="handleOptimize"
+                >
+                  <svg v-if="optimizing" class="animate-spin" width="14" height="14" viewBox="0 0 14 14" fill="none">
+                    <circle cx="7" cy="7" r="5.5" stroke="currentColor" stroke-width="1.5" stroke-dasharray="24 8" stroke-linecap="round"/>
+                  </svg>
+                  <svg v-else width="14" height="14" viewBox="0 0 14 14" fill="none">
+                    <path d="M1.5 7A5.5 5.5 0 0112.17 5.5M12.5 7A5.5 5.5 0 011.83 8.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+                    <path d="M12.17 5.5H9.5M1.83 8.5H4.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+                  </svg>
+                  {{ optimizing ? 'AI 正在优化...' : 'AI 优化提示词' }}
+                </button>
+                <button
+                  class="reg-direct-btn"
+                  :disabled="optimizing || (!visualDesc && !extraGuidance)"
+                  @click="handleDirectGenerate"
+                >
+                  <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                    <path d="M2 2l10 5-10 5 2.5-5-2.5-5z" fill="currentColor"/>
+                  </svg>
+                  直接生成
+                </button>
+              </div>
 
               <!-- Step 2: Optimized prompt editor (shown after optimization) -->
               <div v-if="optimizedPrompt" class="reg-result">
@@ -279,8 +297,15 @@ function handleGenerate() {
 .reg-textarea:focus { border-color: #F5C34B; }
 .reg-textarea::placeholder { color: #A89870; }
 
+/* Action row */
+.reg-action-row {
+  display: flex;
+  gap: 10px;
+}
+
 /* Optimize button */
 .reg-optimize-btn {
+  flex: 1;
   display: flex; align-items: center; justify-content: center; gap: 8px;
   padding: 10px 16px;
   border-radius: 10px;
@@ -296,6 +321,28 @@ function handleGenerate() {
   color: #fff;
 }
 .reg-optimize-btn:disabled {
+  opacity: 0.5; cursor: not-allowed;
+}
+
+/* Direct generate button */
+.reg-direct-btn {
+  flex: 1;
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+  padding: 10px 16px;
+  border-radius: 10px;
+  border: 2px solid #D1D5DB;
+  background: #F9FAFB;
+  color: #6B7280;
+  font-size: 13px; font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.reg-direct-btn:hover:not(:disabled) {
+  background: #E5E7EB;
+  color: #374151;
+  border-color: #9CA3AF;
+}
+.reg-direct-btn:disabled {
   opacity: 0.5; cursor: not-allowed;
 }
 
