@@ -23,6 +23,7 @@ dramaForge_bac/.env
 
 # ----- IDE -----
 .idea/
+.tmp/
 .vscode/
 *.swp
 *.swo
