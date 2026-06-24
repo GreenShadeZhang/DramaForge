@@ -116,8 +116,13 @@ async def init_db() -> None:
             result = await conn.execute(text("PRAGMA table_info(projects)"))
             columns = {row[1] for row in result.fetchall()}
             if "user_id" not in columns:
+                # SQLite cannot add a REFERENCES column with non-NULL default in ALTER TABLE.
+                # Add as nullable first, then set defaults. New DBs get the full FK from create_all.
                 await conn.execute(
-                    text("ALTER TABLE projects ADD COLUMN user_id INTEGER NOT NULL DEFAULT 1 REFERENCES users(id) ON DELETE CASCADE")
+                    text("ALTER TABLE projects ADD COLUMN user_id INTEGER")
+                )
+                await conn.execute(
+                    text("UPDATE projects SET user_id = 1 WHERE user_id IS NULL")
                 )
             result = await conn.execute(text("PRAGMA table_info(shots)"))
             columns = {row[1] for row in result.fetchall()}
