@@ -360,6 +360,30 @@ async def discover_models(provider_id: int, user: CurrentUser, db: DbSession):
     return {"models": models, "count": len(models)}
 
 
+class DiscoverModelsRequest(BaseModel):
+    provider_type: str = Field(default="openai_compatible", max_length=50)
+    auth_type: str = Field(default="bearer", max_length=50)
+    base_url: str = Field(..., max_length=500)
+    api_key: str = Field(..., max_length=1000)
+
+
+@router.post("/discover")
+async def discover_models_from_url(data: DiscoverModelsRequest, user: CurrentUser):
+    try:
+        adapter = get_media_adapter(
+            MediaProviderSettings(
+                provider_type=_normalize_provider_type(data.provider_type),
+                auth_type=data.auth_type.strip().lower(),
+                base_url=data.base_url.strip(),
+                api_key=data.api_key.strip(),
+            )
+        )
+        models = await adapter.list_models()
+        return {"models": models, "count": len(models)}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e)[:300])
+
+
 @router.get("/providers/{provider_id}/models", response_model=list[ModelResponse])
 async def list_models(provider_id: int, user: CurrentUser, db: DbSession):
     provider = await _get_provider(db, provider_id, user.id)
