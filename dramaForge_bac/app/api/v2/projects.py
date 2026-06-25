@@ -17,8 +17,15 @@ from app.models.script import Script
 from app.models.episode import Episode
 from app.models.character import Character
 from app.models.scene import SceneLocation
+from app.models.segment import Segment
+from app.models.user import Conversation
 from app.schemas.project import ProjectCreate, ProjectUpdate, ProjectList, ProjectDetail
 from app.core.security import CurrentUser, get_user_project
+from app.services.storage import storage
+from app.services.storyboard_generation_service import cleanup_project_storyboard_progress
+from app.tasks.asset_tasks import cancel_project_asset_tasks
+from app.tasks.video_tasks import cancel_project_video_tasks
+from app.api.v2.scripts import cancel_project_script_generation
 
 router = APIRouter()
 
@@ -342,5 +349,42 @@ async def delete_project(
     """Delete a project and all related data."""
     project = await get_user_project(project_id, user, db)
 
+    episode_result = await db.execute(
+        select(Episode.id)
+        .join(Script, Episode.script_id == Script.id)
+        .where(Script.project_id == project_id)
+    )
+    episode_ids = list(episode_result.scalars().all())
+
+    segment_result = await db.execute(
+        select(Segment.id)
+        .join(Episode, Segment.episode_id == Episode.id)
+        .join(Script, Episode.script_id == Script.id)
+        .where(Script.project_id == project_id)
+    )
+    segment_ids = list(segment_result.scalars().all())
+
+    character_result = await db.execute(
+        select(Character.id).where(Character.project_id == project_id)
+    )
+    character_ids = list(character_result.scalars().all())
+
+    conversation_result = await db.execute(
+        select(Conversation).where(
+            Conversation.project_id == project_id,
+            Conversation.user_id == user.id,
+        )
+    )
+    conversations = list(conversation_result.scalars().all())
+
+    cancel_project_script_generation(project_id)
+    cancel_project_asset_tasks(project_id, character_ids)
+    cancel_project_video_tasks(segment_ids, episode_ids)
+    await cleanup_project_storyboard_progress(project_id, user.id, episode_ids)
+
+    for conversation in conversations:
+        await db.delete(conversation)
+
     await db.delete(project)
     await db.flush()
+    storage.delete_project_tree(project_id)

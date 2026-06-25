@@ -22,6 +22,7 @@ onMounted(async () => {
   try {
     const { data } = await episodesApi.list(projectId)
     episodes.value = data
+    await hydrateStoryboardStatuses()
   } finally {
     loading.value = false
   }
@@ -45,6 +46,7 @@ const generatingStoryboardEpId = ref<number | null>(null)
 const regeneratingStoryboardEpId = ref<number | null>(null)
 const downloadingEpId = ref<number | null>(null)
 const storyboardProgress = ref<Record<number, StoryboardGenerationStatus>>({})
+const pollingStoryboardEpIds = new Set<number>()
 
 function goBackToAssets() {
   if (projectStore.currentProject) {
@@ -64,6 +66,10 @@ function isStoryboardGenerating(ep: EpisodeOverview) {
     || progress?.status === 'generating'
 }
 
+function isStoryboardFailed(ep: EpisodeOverview) {
+  return storyboardProgress.value[ep.id]?.status === 'failed'
+}
+
 function storyboardGeneratingLabel(ep: EpisodeOverview) {
   const progress = storyboardProgress.value[ep.id]
   if (progress?.status === 'generating' && progress.message) return progress.message
@@ -72,8 +78,15 @@ function storyboardGeneratingLabel(ep: EpisodeOverview) {
   return ''
 }
 
+function storyboardFailedLabel(ep: EpisodeOverview) {
+  const progress = storyboardProgress.value[ep.id]
+  if (progress?.status === 'failed' && progress.message) return progress.message
+  return '分镜生成失败'
+}
+
 function storyboardProgressValue(ep: EpisodeOverview) {
-  return storyboardProgress.value[ep.id]?.progress ?? (isStoryboardGenerating(ep) ? 5 : 0)
+  const value = storyboardProgress.value[ep.id]?.progress ?? (isStoryboardGenerating(ep) ? 5 : 0)
+  return Math.max(0, Math.min(100, value))
 }
 
 function setStoryboardProgress(epId: number, status: StoryboardGenerationStatus) {
@@ -88,21 +101,77 @@ async function refreshEpisodes() {
   episodes.value = data
 }
 
+async function hydrateStoryboardStatuses() {
+  await Promise.all(
+    episodes.value.map(async ep => {
+      try {
+        const { data: status } = await storyboardApi.getGenerationStatus(projectId, ep.id)
+        setStoryboardProgress(ep.id, status)
+        if (status.status === 'generating') {
+          void pollStoryboardUntilDone(ep.id)
+        }
+      } catch {
+        setStoryboardProgress(ep.id, {
+          status: 'idle',
+          progress: 0,
+          message: '',
+        })
+      }
+    })
+  )
+}
+
 function delay(ms: number) {
   return new Promise(resolve => setTimeout(resolve, ms))
 }
 
 async function waitForStoryboardRefresh(epId: number) {
-  for (let attempt = 0; attempt < 120; attempt += 1) {
+  const deadline = Date.now() + 10 * 60 * 1000
+  while (Date.now() < deadline) {
     await delay(1500)
-    const { data: status } = await storyboardApi.getGenerationStatus(projectId, epId)
+    let status: StoryboardGenerationStatus
+    try {
+      const { data } = await storyboardApi.getGenerationStatus(projectId, epId)
+      status = data
+    } catch {
+      const previous = storyboardProgress.value[epId]
+      setStoryboardProgress(epId, {
+        status: 'generating',
+        progress: previous?.progress || 5,
+        message: '等待服务响应',
+      })
+      continue
+    }
     setStoryboardProgress(epId, status)
     if (status.status === 'failed') {
       throw new Error(status.message || '分镜生成失败')
     }
+    if (status.status === 'cancelled') {
+      return
+    }
     await refreshEpisodes()
     const episode = episodes.value.find(item => item.id === epId)
     if (status.status === 'completed' || (episode && episode.segment_count > 0)) return
+  }
+  throw new Error('分镜生成超时，请稍后刷新查看结果')
+}
+
+async function pollStoryboardUntilDone(epId: number) {
+  if (pollingStoryboardEpIds.has(epId)) return
+  pollingStoryboardEpIds.add(epId)
+  try {
+    await waitForStoryboardRefresh(epId)
+  } catch (e: any) {
+    setStoryboardProgress(epId, {
+      status: 'failed',
+      progress: 100,
+      message: e?.response?.data?.detail || e?.message || '分镜生成失败',
+    })
+  } finally {
+    pollingStoryboardEpIds.delete(epId)
+    if (generatingStoryboardEpId.value === epId) generatingStoryboardEpId.value = null
+    if (regeneratingStoryboardEpId.value === epId) regeneratingStoryboardEpId.value = null
+    await refreshEpisodes()
   }
 }
 
@@ -115,14 +184,13 @@ async function handleGenerateStoryboard(epId: number) {
   })
   try {
     await storyboardApi.generate(projectId, epId)
-    await waitForStoryboardRefresh(epId)
+    await pollStoryboardUntilDone(epId)
   } catch (e: any) {
     setStoryboardProgress(epId, {
       status: 'failed',
       progress: 100,
       message: e?.response?.data?.detail || e?.message || '分镜生成失败',
     })
-    alert(e?.response?.data?.detail || e?.message || '分镜生成失败')
   } finally {
     generatingStoryboardEpId.value = null
   }
@@ -141,16 +209,35 @@ async function handleRegenerateStoryboard(ep: EpisodeOverview) {
   try {
     await storyboardApi.generate(projectId, ep.id, { force: true })
     await refreshEpisodes()
-    await waitForStoryboardRefresh(ep.id)
+    await pollStoryboardUntilDone(ep.id)
   } catch (e: any) {
     setStoryboardProgress(ep.id, {
       status: 'failed',
       progress: 100,
       message: e?.response?.data?.detail || e?.message || '重新生成分镜失败',
     })
-    alert(e?.response?.data?.detail || e?.message || '重新生成分镜失败')
   } finally {
     regeneratingStoryboardEpId.value = null
+  }
+}
+
+async function handleCancelStoryboard(epId: number) {
+  try {
+    await storyboardApi.cancelGeneration(projectId, epId)
+    setStoryboardProgress(epId, {
+      status: 'cancelled',
+      progress: storyboardProgress.value[epId]?.progress || 0,
+      message: '分镜生成已取消',
+    })
+  } catch (e: any) {
+    setStoryboardProgress(epId, {
+      status: 'failed',
+      progress: 100,
+      message: e?.response?.data?.detail || e?.message || '取消生成失败',
+    })
+  } finally {
+    if (generatingStoryboardEpId.value === epId) generatingStoryboardEpId.value = null
+    if (regeneratingStoryboardEpId.value === epId) regeneratingStoryboardEpId.value = null
   }
 }
 
@@ -310,7 +397,10 @@ function getThumbnailGradient(index: number) {
         v-for="(ep, idx) in episodes"
         :key="ep.id"
         class="episode-card"
-        :class="{ 'episode-card--generating': isStoryboardGenerating(ep) }"
+        :class="{
+          'episode-card--generating': isStoryboardGenerating(ep),
+          'episode-card--failed': isStoryboardFailed(ep),
+        }"
         @click="hasStoryboard(ep) && !isStoryboardGenerating(ep) && router.push(`/projects/${projectId}/episodes/${ep.id}/storyboard`)"
       >
         <!-- Thumbnail -->
@@ -336,8 +426,11 @@ function getThumbnailGradient(index: number) {
             </svg>
           </span>
           <div v-if="isStoryboardGenerating(ep)" class="thumb-generating">
-            <div class="mini-spinner" />
             <span>{{ storyboardGeneratingLabel(ep) }}</span>
+          </div>
+          <div v-else-if="isStoryboardFailed(ep)" class="thumb-failed">
+            <span>!</span>
+            <strong>生成失败</strong>
           </div>
         </div>
 
@@ -347,9 +440,13 @@ function getThumbnailGradient(index: number) {
             <h3 class="card-title">
               第 {{ ep.number }} 集：{{ ep.title || '无标题' }}
             </h3>
-            <span v-if="isStoryboardGenerating(ep)" class="card-status-pill">
-              <span class="mini-dot" />
-              {{ storyboardGeneratingLabel(ep) }}
+            <span
+              v-if="isStoryboardGenerating(ep) || isStoryboardFailed(ep)"
+              class="card-status-pill"
+              :class="{ 'card-status-pill--failed': isStoryboardFailed(ep) }"
+            >
+              <span class="mini-dot" :class="{ 'mini-dot--failed': isStoryboardFailed(ep) }" />
+              {{ isStoryboardFailed(ep) ? '生成失败' : storyboardGeneratingLabel(ep) }}
             </span>
           </div>
 
@@ -390,6 +487,9 @@ function getThumbnailGradient(index: number) {
               <span :style="{ width: `${storyboardProgressValue(ep)}%` }" />
             </div>
           </div>
+          <div v-else-if="isStoryboardFailed(ep)" class="card-error">
+            {{ storyboardFailedLabel(ep) }}
+          </div>
 
           <!-- Actions -->
           <div class="card-actions">
@@ -399,16 +499,12 @@ function getThumbnailGradient(index: number) {
               :disabled="isStoryboardGenerating(ep)"
               @click.stop="handleGenerateStoryboard(ep.id)"
             >
-              <svg v-if="isStoryboardGenerating(ep)" class="animate-spin" width="14" height="14" viewBox="0 0 14 14" fill="none">
-                <circle cx="7" cy="7" r="5.5" stroke="currentColor" stroke-width="1.5" opacity="0.3"/>
-                <path d="M7 1.5a5.5 5.5 0 015.1 3.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-              </svg>
-              <svg v-else width="14" height="14" viewBox="0 0 14 14" fill="none">
+              <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
                 <path d="M1.5 10.5l3 1.5L8 2.5 4.8 1 1.5 10.5z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/>
                 <path d="M4.8 1l.8 2.5" stroke="currentColor" stroke-width="1.2"/>
                 <path d="M10.5 4.5l2-1M8.5 8.5l2 3.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
               </svg>
-              {{ isStoryboardGenerating(ep) ? storyboardGeneratingLabel(ep) : '分镜生成' }}
+              {{ isStoryboardGenerating(ep) ? storyboardGeneratingLabel(ep) : (isStoryboardFailed(ep) ? '重试分镜生成' : '分镜生成') }}
             </button>
             <button
               v-if="hasStoryboard(ep) && !isStoryboardGenerating(ep)"
@@ -437,17 +533,23 @@ function getThumbnailGradient(index: number) {
               :disabled="isStoryboardGenerating(ep)"
               @click.stop="handleRegenerateStoryboard(ep)"
             >
-              <svg v-if="isStoryboardGenerating(ep)" class="animate-spin" width="14" height="14" viewBox="0 0 14 14" fill="none">
-                <circle cx="7" cy="7" r="5.5" stroke="currentColor" stroke-width="1.5" opacity="0.3"/>
-                <path d="M7 1.5a5.5 5.5 0 015.1 3.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-              </svg>
-              <svg v-else width="14" height="14" viewBox="0 0 14 14" fill="none">
+              <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
                 <path d="M11.5 5.5A4.5 4.5 0 104.6 9.3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
                 <path d="M11.5 2v3.5H8" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
                 <path d="M2.5 8.5A4.5 4.5 0 009.4 4.7" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
                 <path d="M2.5 12V8.5H6" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
               </svg>
               {{ isStoryboardGenerating(ep) ? storyboardGeneratingLabel(ep) : '重生成分镜' }}
+            </button>
+            <button
+              v-if="isStoryboardGenerating(ep)"
+              class="action-btn action-btn--outline action-btn--danger"
+              @click.stop="handleCancelStoryboard(ep.id)"
+            >
+              <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                <rect x="3" y="3" width="8" height="8" rx="1.5" stroke="currentColor" stroke-width="1.4"/>
+              </svg>
+              取消生成
             </button>
             <button
               v-if="hasStoryboard(ep) && !isStoryboardGenerating(ep)"
@@ -464,7 +566,6 @@ function getThumbnailGradient(index: number) {
         </div>
       </div>
     </div>
-
     </div>
     <!-- ═══ Bottom Bar ═══ -->
     <div v-if="episodes.length" class="bottom-bar">
@@ -704,6 +805,15 @@ function getThumbnailGradient(index: number) {
   transform: none;
 }
 
+.episode-card--failed {
+  border-color: rgba(220, 38, 38, 0.35);
+  box-shadow: 0 0 0 2px rgba(220, 38, 38, 0.06);
+}
+
+.episode-card--failed:hover {
+  transform: none;
+}
+
 /* ── Thumbnail ── */
 .card-thumb {
   width: 120px;
@@ -786,13 +896,41 @@ function getThumbnailGradient(index: number) {
   backdrop-filter: blur(2px);
 }
 
-.mini-spinner {
-  width: 22px;
-  height: 22px;
-  border: 2px solid rgba(255, 247, 219, 0.5);
-  border-top-color: #fff7db;
+.thumb-generating span {
+  max-width: 86px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.thumb-failed {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  background: rgba(69, 10, 10, 0.58);
+  color: #fff1f2;
+  text-align: center;
+  backdrop-filter: blur(2px);
+}
+
+.thumb-failed span {
+  width: 24px;
+  height: 24px;
   border-radius: 50%;
-  animation: spin 0.75s linear infinite;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(254, 226, 226, 0.22);
+  font-size: 16px;
+  font-weight: 900;
+}
+
+.thumb-failed strong {
+  font-size: 12px;
 }
 
 /* ── Card Body ── */
@@ -839,12 +977,22 @@ function getThumbnailGradient(index: number) {
   white-space: nowrap;
 }
 
+.card-status-pill--failed {
+  background: rgba(220, 38, 38, 0.1);
+  color: #b91c1c;
+}
+
 .mini-dot {
   width: 6px;
   height: 6px;
   border-radius: 50%;
   background: #E8A317;
   animation: pulse 1s ease-in-out infinite;
+}
+
+.mini-dot--failed {
+  background: #dc2626;
+  animation: none;
 }
 
 /* ── Stats Pills ── */
@@ -928,6 +1076,17 @@ function getThumbnailGradient(index: number) {
   transition: width 0.25s ease;
 }
 
+.card-error {
+  margin-top: 12px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(220, 38, 38, 0.08);
+  color: #991b1b;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
 /* ── Card Actions ── */
 .card-actions {
   display: flex;
@@ -980,6 +1139,16 @@ function getThumbnailGradient(index: number) {
   background: #FFF4C6;
   border-color: #E8A317;
   color: #6f4200;
+}
+
+.action-btn--danger {
+  color: #b91c1c;
+  border-color: rgba(220, 38, 38, 0.28);
+}
+.action-btn--danger:hover {
+  background: #FEF2F2;
+  border-color: rgba(220, 38, 38, 0.5);
+  color: #991b1b;
 }
 
 .action-btn--primary {

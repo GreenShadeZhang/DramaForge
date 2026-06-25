@@ -36,6 +36,12 @@ from app.schemas.storyboard import (
 from app.engines.video_engine import video_engine
 from app.services.user_model_resolver import user_model_resolver
 from app.services.storage import storage
+from app.services.storyboard_generation_service import (
+    get_storyboard_progress,
+    set_storyboard_progress,
+    cancel_storyboard_generation,
+)
+from app.tasks.storyboard_tasks import enqueue_storyboard_generation_job
 from app.core.security import CurrentUser, DbSession, get_user_project
 from app.core.billing_deps import require_credits
 
@@ -49,17 +55,6 @@ ALLOWED_AUDIO_CONTENT_TYPES = {
     "audio/aac",
     "audio/ogg",
 }
-STORYBOARD_PROGRESS: dict[int, dict[str, object]] = {}
-
-
-def _set_storyboard_progress(episode_id: int, status: str, progress: int, message: str) -> None:
-    STORYBOARD_PROGRESS[episode_id] = {
-        "status": status,
-        "progress": max(0, min(100, progress)),
-        "message": message,
-    }
-
-
 class ComposeRequest(BaseModel):
     """Request to compose a full episode video."""
     quality: str = Field(default="high", pattern="^(low|medium|high)$", description="视频质量: low, medium, high")
@@ -226,105 +221,56 @@ async def _load_segment_shots(segment: Segment, db: AsyncSession) -> list[Shot]:
     return shots
 
 
-async def _background_generate_storyboard(
-    project_id: int,
-    episode_id: int,
-    user_id: int,
-    shots_per_segment: int = 5,
-):
-    """Background task: generate storyboard segments and shots via AI."""
-    async with AsyncSessionLocal() as db:
-        try:
-            _set_storyboard_progress(episode_id, "generating", 10, "加载剧集内容")
-            episode = await db.get(Episode, episode_id)
-            if not episode:
-                logger.error(f"Background: episode {episode_id} not found for storyboard generation")
-                _set_storyboard_progress(episode_id, "failed", 100, "剧集不存在")
-                return
-
-            _set_storyboard_progress(episode_id, "generating", 20, "读取角色与场景")
-            characters, scenes = await _get_project_assets(project_id, db)
-
-            if not episode.content:
-                logger.error(f"Background: episode {episode_id} has no content")
-                _set_storyboard_progress(episode_id, "failed", 100, "剧集正文为空")
-                return
-
-            _set_storyboard_progress(episode_id, "generating", 32, "连接剧本模型")
-            chat_resolved = await user_model_resolver.resolve(db, user_id, "chat")
-
-            _set_storyboard_progress(episode_id, "generating", 48, "生成分镜结构")
-            segments = await video_engine.generate_episode(
-                episode=episode,
-                characters=characters,
-                scenes=scenes,
-                project_id=project_id,
-                shots_per_segment=shots_per_segment,
-                chat_model=chat_resolved.model_id,
-                chat_api_key=chat_resolved.api_key,
-                chat_base_url=chat_resolved.base_url,
-                chat_options=chat_resolved.raw_params or {},
-            )
-
-            _set_storyboard_progress(episode_id, "generating", 88, "写入分镜结果")
-            for segment in segments:
-                db.add(segment)
-            await db.commit()
-
-            total_shots = sum(len(seg.shots) for seg in segments)
-            logger.info(
-                f"Background: storyboard generated for episode {episode_id} "
-                f"— {len(segments)} segments, {total_shots} shots"
-            )
-            _set_storyboard_progress(episode_id, "completed", 100, "分镜生成完成")
-        except Exception as e:
-            logger.error(f"Background: storyboard generation failed for episode {episode_id}: {e}")
-            await db.rollback()
-            _set_storyboard_progress(episode_id, "failed", 100, str(e)[:120] or "分镜生成失败")
-
-
 @router.post("/projects/{project_id}/episodes/{episode_id}/storyboard")
 async def generate_storyboard(
     project_id: int,
     episode_id: int,
     user: CurrentUser,
     db: DbSession,
-    background_tasks: BackgroundTasks,
     body: StoryboardGenerateRequest = StoryboardGenerateRequest(),
 ):
     """Generate storyboard (segments + shots) for an episode via AI (async)."""
-    # Verify project ownership
     await get_user_project(project_id, user, db)
 
-    # Consume credits for storyboard generation
-    await require_credits(db, user.id, "storyboard_gen", description="分镜自动生成")
-    await db.commit()  # release write lock before background task
-
     episode = await _get_episode(project_id, episode_id, db)
-
     if not episode.content:
         raise HTTPException(status_code=400, detail="Episode has no content")
 
-    _set_storyboard_progress(episode_id, "generating", 5, "分镜任务已提交")
+    current_progress = await get_storyboard_progress(project_id, episode_id, user_id=user.id)
+    if current_progress and current_progress.get("status") == "generating":
+        return {
+            "message": current_progress.get("message") or "Storyboard generation already running",
+            "status": "generating",
+        }
 
-    # Remove existing segments if force regenerate
+    await require_credits(db, user.id, "storyboard_gen", description="分镜自动生成")
+
     if body.force:
-        _set_storyboard_progress(episode_id, "generating", 8, "清理旧分镜")
         existing = await db.execute(
             select(Segment).where(Segment.episode_id == episode_id)
         )
         for seg in existing.scalars().all():
             await db.delete(seg)
-        await db.commit()
+    await db.commit()
 
-    # Fire background task
-    background_tasks.add_task(
-        _background_generate_storyboard,
-        project_id=project_id,
-        episode_id=episode_id,
-        user_id=user.id,
-        shots_per_segment=body.shots_per_segment,
-    )
+    await set_storyboard_progress(project_id, episode_id, "generating", 5, "分镜任务已提交", user_id=user.id)
+    try:
+        await enqueue_storyboard_generation_job(
+            project_id=project_id,
+            episode_id=episode_id,
+            user_id=user.id,
+            shots_per_segment=body.shots_per_segment,
+        )
+    except Exception as exc:
+        await set_storyboard_progress(
+            project_id,
+            episode_id,
+            "failed",
+            100,
+            f"分镜任务入队失败: {exc}"[:120],
+            user_id=user.id,
+        )
+        raise HTTPException(status_code=503, detail=f"分镜任务入队失败: {exc}") from exc
 
     return {
         "message": "Storyboard generation started",
@@ -342,7 +288,7 @@ async def get_storyboard_generation_status(
     """Get storyboard generation progress for an episode."""
     await get_user_project(project_id, user, db)
     await _get_episode(project_id, episode_id, db)
-    progress = STORYBOARD_PROGRESS.get(episode_id)
+    progress = await get_storyboard_progress(project_id, episode_id, user_id=user.id)
     if progress:
         return progress
 
@@ -359,6 +305,27 @@ async def get_storyboard_generation_status(
         "status": "idle",
         "progress": 0,
         "message": "尚未生成分镜",
+    }
+
+
+@router.post("/projects/{project_id}/episodes/{episode_id}/storyboard/cancel")
+async def cancel_storyboard(
+    project_id: int,
+    episode_id: int,
+    user: CurrentUser,
+    db: DbSession,
+):
+    """Cancel an ongoing storyboard generation."""
+    await get_user_project(project_id, user, db)
+    await _get_episode(project_id, episode_id, db)
+
+    progress = await get_storyboard_progress(project_id, episode_id, user_id=user.id)
+    if progress and progress.get("status") == "generating":
+        await cancel_storyboard_generation(project_id, episode_id, user_id=user.id)
+        return {"message": "分镜生成已取消", "status": "cancelled"}
+    return {
+        "message": "没有正在进行的生成任务",
+        "status": progress.get("status") if progress else "idle",
     }
 
 

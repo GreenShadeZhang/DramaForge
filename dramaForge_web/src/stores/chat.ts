@@ -11,13 +11,16 @@ import {
   getConversation,
   deleteConversation as apiDeleteConversation,
 } from '@/api/chat'
-import type { ChatMessage, Conversation, ConversationDetail, SendMessageRequest } from '@/api/chat'
+import type { AgentIntentKind, AgentIntentPayload, ChatMessage, Conversation, ConversationDetail, MediaJobPayload, SendMessageRequest } from '@/api/chat'
+import { getJob } from '@/api/user-ai-config'
+import type { MediaJob } from '@/types/user-ai-config'
 
 /** Local UI message (extends API message with streaming state) */
 export interface UIMessage {
   id: number | null          // null while streaming
   role: 'user' | 'assistant' | 'system'
   content: string
+  meta_json?: Record<string, any> | null
   isStreaming?: boolean
   created_at: string
 }
@@ -46,6 +49,7 @@ export const useChatStore = defineStore('chat', () => {
   let abortController: AbortController | null = null
   let typewriterTimer: ReturnType<typeof setInterval> | null = null
   let charBuffer = ''
+  const pollingMediaJobs = new Set<number>()
 
   // ═══════ Getters ═══════
   const currentConversation = computed(() =>
@@ -92,6 +96,59 @@ export const useChatStore = defineStore('chat', () => {
     isThinking.value = false
   }
 
+  function normalizeMediaJob(job: MediaJob | MediaJobPayload): MediaJobPayload {
+    return {
+      id: job.id,
+      capability: job.capability as 'image' | 'video',
+      provider_id: job.provider_id,
+      model_id: job.model_id,
+      provider_job_id: job.provider_job_id,
+      status: job.status,
+      progress: job.progress,
+      request_json: job.request_json || {},
+      result_assets_json: job.result_assets_json || [],
+      error: job.error,
+    }
+  }
+
+  function updateLastAssistantMeta(meta: Record<string, any>): void {
+    const last = messages.value[messages.value.length - 1]
+    if (last && last.role === 'assistant') {
+      last.meta_json = { ...(last.meta_json || {}), ...meta }
+    }
+  }
+
+  function updateMediaJobMeta(job: MediaJob | MediaJobPayload): void {
+    const payload = normalizeMediaJob(job)
+    const target = [...messages.value]
+      .reverse()
+      .find(m => m.role === 'assistant' && m.meta_json?.media_job?.id === payload.id)
+    if (target) {
+      target.meta_json = { ...(target.meta_json || {}), media_job: payload }
+    } else {
+      updateLastAssistantMeta({ media_job: payload })
+    }
+  }
+
+  async function pollMediaJob(jobId: number): Promise<void> {
+    if (pollingMediaJobs.has(jobId)) return
+    pollingMediaJobs.add(jobId)
+    try {
+      for (let attempt = 0; attempt < 120; attempt += 1) {
+        // Adaptive polling: 2s for first 10 attempts, 3s for next 20, 5s thereafter
+        const delay = attempt < 10 ? 2000 : attempt < 30 ? 3000 : 5000
+        await new Promise(resolve => setTimeout(resolve, delay))
+        const job = await getJob(jobId)
+        updateMediaJobMeta(job)
+        if (['succeeded', 'failed', 'cancelled'].includes(job.status)) break
+      }
+    } catch (e) {
+      console.warn('Failed to poll media job', e)
+    } finally {
+      pollingMediaJobs.delete(jobId)
+    }
+  }
+
   // ═══════ Actions ═══════
 
   /** Fetch conversation list */
@@ -115,8 +172,16 @@ export const useChatStore = defineStore('chat', () => {
         id: m.id,
         role: m.role,
         content: m.content,
+        meta_json: m.meta_json,
         created_at: m.created_at,
       }))
+      // Resume polling for any in-progress media jobs
+      for (const msg of messages.value) {
+        const job = msg.meta_json?.media_job as MediaJobPayload | undefined
+        if (job && ['queued', 'running', 'created'].includes(job.status)) {
+          void pollMediaJob(job.id)
+        }
+      }
     } catch (e: any) {
       error.value = '加载对话失败'
       console.error(e)
@@ -144,6 +209,7 @@ export const useChatStore = defineStore('chat', () => {
       mode?: string
       projectId?: number
       model?: string
+      model_capability?: AgentIntentKind
       temperature?: number
     } = {},
   ): Promise<void> {
@@ -187,6 +253,7 @@ export const useChatStore = defineStore('chat', () => {
       mode: options.mode,
       project_id: options.projectId,
       model: options.model,
+      model_capability: options.model_capability,
       temperature: options.temperature,
     }
 
@@ -216,6 +283,13 @@ export const useChatStore = defineStore('chat', () => {
             if (isThinking.value) {
               isThinking.value = false
             }
+          },
+          onAgentIntent: (intent: AgentIntentPayload) => {
+            updateLastAssistantMeta({ agent_intent: intent })
+          },
+          onMediaJob: (job: MediaJobPayload) => {
+            updateMediaJobMeta(job)
+            void pollMediaJob(job.id)
           },
           onDone: (messageId: number) => {
             // Flush remaining buffer immediately

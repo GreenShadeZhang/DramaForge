@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, nextTick } from 'vue'
+import { ref, onMounted, nextTick, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { projectsApi } from '@/api/projects'
 import { VideoStyleLabel, DramaGenreLabel, ProjectStepLabel } from '@/types/enums'
@@ -22,6 +22,15 @@ const showDeleteConfirm = ref(false)
 const deletingProject = ref<ProjectList | null>(null)
 const showDeleteAllConfirm = ref(false)
 const deleting = ref(false)
+const deleteConfirmInput = ref('')
+const deleteAllConfirmInput = ref('')
+const deleteAllRequireText = '删除全部'
+const deleteProjectTitle = computed(() => deletingProject.value?.title || '')
+const deleteCleanupDetails = [
+  '项目剧本、分集、角色、场景、分镜数据',
+  '项目生成文件、上传文件、BGM 与视频产物',
+  '项目会话记录与正在运行的项目任务',
+]
 
 // ── Toast ──
 const toastMsg = ref('')
@@ -64,7 +73,14 @@ function cancelRename() { editingId.value = null }
 // ── Delete single ──
 function confirmDelete(p: ProjectList) {
   deletingProject.value = p
+  deleteConfirmInput.value = ''
   showDeleteConfirm.value = true
+}
+function cancelDelete() {
+  if (deleting.value) return
+  showDeleteConfirm.value = false
+  deletingProject.value = null
+  deleteConfirmInput.value = ''
 }
 async function handleDelete() {
   if (!deletingProject.value) return
@@ -76,10 +92,20 @@ async function handleDelete() {
   } catch { showToast('删除失败', 'error') }
   showDeleteConfirm.value = false
   deletingProject.value = null
+  deleteConfirmInput.value = ''
   deleting.value = false
 }
 
 // ── Delete all ──
+function confirmDeleteAll() {
+  deleteAllConfirmInput.value = ''
+  showDeleteAllConfirm.value = true
+}
+function cancelDeleteAll() {
+  if (deleting.value) return
+  showDeleteAllConfirm.value = false
+  deleteAllConfirmInput.value = ''
+}
 async function handleDeleteAll() {
   deleting.value = true
   let count = 0
@@ -89,6 +115,7 @@ async function handleDeleteAll() {
   await refreshList()
   showToast(`已删除 ${count} 个项目`)
   showDeleteAllConfirm.value = false
+  deleteAllConfirmInput.value = ''
   deleting.value = false
 }
 
@@ -117,7 +144,7 @@ async function handleDuplicate(id: number) {
         <button
           v-if="projects.length"
           class="btn btn-outline text-error border-[#E74C3C] hover:bg-[rgba(231,76,60,0.06)]"
-          @click="showDeleteAllConfirm = true"
+          @click="confirmDeleteAll"
         >
           <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M2 4h10M5 4V2.5a.5.5 0 01.5-.5h3a.5.5 0 01.5.5V4M11 4v6.5a1.5 1.5 0 01-1.5 1.5h-5A1.5 1.5 0 013 10.5V4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
           删除全部
@@ -230,22 +257,32 @@ async function handleDuplicate(id: number) {
     <ConfirmDialog
       :visible="showDeleteConfirm"
       title="删除项目"
-      :message="`确定要删除「${deletingProject?.title || ''}」吗？此操作无法撤销。`"
+      :message="`将永久删除「${deleteProjectTitle}」。删除后无法恢复，请确认已不再需要这个项目。`"
+      :details="deleteCleanupDetails"
+      :require-text="deleteProjectTitle"
+      v-model:confirm-input="deleteConfirmInput"
       confirm-text="确认删除"
+      cancel-text="保留项目"
       danger
+      :loading="deleting"
       @confirm="handleDelete"
-      @cancel="showDeleteConfirm = false"
+      @cancel="cancelDelete"
     />
 
     <!-- ═══ Confirm: Delete all ═══ -->
     <ConfirmDialog
       :visible="showDeleteAllConfirm"
       title="删除全部"
-      :message="`确定要删除全部 ${projects.length} 个项目吗？此操作无法撤销，请谨慎操作。`"
+      :message="`将永久删除当前列表中的 ${projects.length} 个项目及其相关数据。此操作无法恢复。`"
+      :details="deleteCleanupDetails"
+      :require-text="deleteAllRequireText"
+      v-model:confirm-input="deleteAllConfirmInput"
       confirm-text="全部删除"
+      cancel-text="保留项目"
       danger
+      :loading="deleting"
       @confirm="handleDeleteAll"
-      @cancel="showDeleteAllConfirm = false"
+      @cancel="cancelDeleteAll"
     />
 
     <!-- ═══ Toast ═══ -->

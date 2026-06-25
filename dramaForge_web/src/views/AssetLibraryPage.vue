@@ -24,8 +24,9 @@ const filterType = ref<'all' | 'image' | 'video'>('all')
 const filteredAssets = computed(() => {
   if (filterType.value === 'all') return assets.value
   return assets.value.filter(a => {
-    if (filterType.value === 'video') return a.reference_images?.[0]?.endsWith('.mp4')
-    return !a.reference_images?.[0]?.endsWith('.mp4')
+    const url = getAssetImage(a) || ''
+    if (filterType.value === 'video') return url.endsWith('.mp4')
+    return !url.endsWith('.mp4')
   })
 })
 
@@ -67,12 +68,20 @@ function formatDate(dateStr: string) {
 }
 
 function isVideo(asset: any) {
-  const url = asset.reference_images?.[0] || ''
+  const url = getAssetImage(asset) || ''
   return url.endsWith('.mp4') || url.endsWith('.webm') || url.endsWith('.mov')
 }
 
 function getAssetSource(asset: any) {
   return asset.source || '创作生成'
+}
+
+/** 归一化 reference_images：后端可能返回字符串 URL 或 {url, name, ...} 对象 */
+function getAssetImage(asset: any): string | null {
+  const img = asset.reference_images?.[0]
+  if (!img) return null
+  if (typeof img === 'string') return img
+  return img.url || null
 }
 
 const showSubscribeSheet = ref(false)
@@ -310,13 +319,13 @@ async function handleDeleteAsset(assetId: number) {
           <!-- Thumbnail area -->
           <div class="card-thumb">
             <img
-              v-if="asset.reference_images?.[0] && !isVideo(asset)"
-              :src="asset.reference_images[0]"
+              v-if="getAssetImage(asset) && !isVideo(asset)"
+              :src="getAssetImage(asset)!"
               :alt="asset.name"
               class="thumb-img"
             />
             <div v-else-if="isVideo(asset)" class="thumb-video">
-              <video :src="asset.reference_images?.[0]" class="thumb-img" muted />
+              <video :src="getAssetImage(asset) || undefined" class="thumb-img" muted />
               <span class="video-badge">0:10</span>
             </div>
             <img
@@ -359,7 +368,7 @@ async function handleDeleteAsset(assetId: number) {
           class="list-item"
         >
           <div class="list-thumb">
-            <img v-if="asset.reference_images?.[0]" :src="asset.reference_images[0]" class="list-thumb-img" />
+            <img v-if="getAssetImage(asset)" :src="getAssetImage(asset)!" class="list-thumb-img" />
             <img
               v-else-if="asset.type === 'scene'"
               :src="DEFAULT_SCENE_IMAGE"

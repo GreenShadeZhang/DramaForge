@@ -145,10 +145,13 @@ const showRatioMenu = ref(false)
 const showPresetMenu = ref(false)
 
 const modelAuto = ref(true)
-const modelTab = ref<'video' | 'image' | 'chat'>('chat')
+type ModelCapability = 'chat' | 'image' | 'video'
+
+const modelTab = ref<ModelCapability>('chat')
 const selectedRatio = ref('auto')
 const presetSearch = ref('')
 const selectedModel = ref('')  // '' means auto
+const selectedModelCapability = ref<ModelCapability | ''>('')
 
 interface ModelOption {
   id: string
@@ -205,14 +208,30 @@ const hasAnyUserModels = computed(() =>
 /** Current model display name */
 const selectedModelName = computed(() => {
   if (!selectedModel.value) return '自动'
-  const all = [...userChatModels.value, ...userVideoModels.value, ...userImageModels.value]
-  return all.find(m => m.id === selectedModel.value)?.name || selectedModel.value
+  const modelGroups: Record<ModelCapability, ModelOption[]> = {
+    chat: userChatModels.value,
+    image: userImageModels.value,
+    video: userVideoModels.value,
+  }
+  const models = selectedModelCapability.value
+    ? modelGroups[selectedModelCapability.value]
+    : [...userChatModels.value, ...userVideoModels.value, ...userImageModels.value]
+  return models.find(m => m.id === selectedModel.value)?.name || selectedModel.value
 })
 
-function selectModel(id: string) {
+function selectModel(id: string, capability: ModelCapability) {
   selectedModel.value = id
+  selectedModelCapability.value = capability
   modelAuto.value = false
   closeAllMenus()
+}
+
+function toggleModelAuto() {
+  modelAuto.value = !modelAuto.value
+  if (modelAuto.value) {
+    selectedModel.value = ''
+    selectedModelCapability.value = ''
+  }
 }
 
 /** Auto-select appropriate default model tab based on mode */
@@ -226,6 +245,7 @@ watch(currentMode, (mode) => {
   }
   // Reset to auto for new mode
   selectedModel.value = ''
+  selectedModelCapability.value = ''
   modelAuto.value = true
 })
 const ratioOptions = [
@@ -310,8 +330,9 @@ async function startCreation() {
   const input = userInput.value
   const agentMode = modeAgentMap[currentMode.value] || 'general'
   const model = modelAuto.value ? undefined : (selectedModel.value || undefined)
+  const modelCapability = modelAuto.value ? undefined : (selectedModelCapability.value || undefined)
   userInput.value = ''
-  await chatStore.sendMessage(input, { mode: agentMode, model })
+  await chatStore.sendMessage(input, { mode: agentMode, model, model_capability: modelCapability })
 
   // Check if the error was insufficient credits
   if (chatStore.error === 'INSUFFICIENT_CREDITS') {
@@ -331,6 +352,17 @@ function fillTag(tag: string) {
 function handleNewChat() {
   chatStore.newConversation()
   userInput.value = ''
+}
+
+function handleCreateAgentEntry() {
+  currentMode.value = 'agent'
+  closeAllMenus()
+  handleNewChat()
+}
+
+function handleDramaAgentEntry() {
+  closeAllMenus()
+  router.push('/drama-workbench')
 }
 
 async function handleLoadConversation(convId: number) {
@@ -471,6 +503,40 @@ function formatTime(isoStr: string): string {
   } catch {
     return ''
   }
+}
+
+function mediaJobTypeLabel(job: any): string {
+  return job?.capability === 'image' ? '图片生成' : '视频生成'
+}
+
+function mediaJobStatusLabel(status: string): string {
+  const map: Record<string, string> = {
+    created: '已创建',
+    queued: '排队中',
+    running: '生成中',
+    succeeded: '已完成',
+    failed: '失败',
+    cancelled: '已取消',
+  }
+  return map[status] || status || '未知'
+}
+
+function mediaJobAssetUrl(job: any): string {
+  const asset = job?.result_assets_json?.[0]
+  const url = asset?.url || asset?.provider_url || ''
+  if (!url) return ''
+  if (/^https?:\/\//.test(url)) return url
+  const apiBase = import.meta.env.VITE_API_BASE_URL || ''
+  const backendBase = apiBase.replace(/\/api\/v\d+\/?$/, '')
+  return url.startsWith('/') ? `${backendBase}${url}` : url
+}
+
+/** Handle image load error — hide broken img, show fallback */
+function onMediaImageError(e: Event): void {
+  const img = e.target as HTMLImageElement
+  img.style.display = 'none'
+  const fallback = img.nextElementSibling as HTMLElement | null
+  if (fallback) fallback.style.display = 'flex'
 }
 </script>
 
@@ -617,6 +683,69 @@ function formatTime(isoStr: string): string {
                   <div class="chat-assistant-text whitespace-pre-wrap">
                     {{ msg.content }}<span v-if="msg.isStreaming && msg.content" class="streaming-cursor">|</span>
                   </div>
+                  <div v-if="msg.meta_json?.media_job" class="chat-media-job-card">
+                    <div class="chat-media-job-main">
+                      <div class="chat-media-job-title">{{ mediaJobTypeLabel(msg.meta_json.media_job) }}</div>
+                      <div class="chat-media-job-meta">
+                        #{{ msg.meta_json.media_job.id }} · {{ mediaJobStatusLabel(msg.meta_json.media_job.status) }} · {{ msg.meta_json.media_job.model_id }}
+                      </div>
+                    </div>
+
+                    <!-- 生成中 — 进度条 -->
+                    <div
+                      v-if="['queued', 'running', 'created'].includes(msg.meta_json.media_job.status)"
+                      class="chat-media-job-progress"
+                    >
+                      <span :style="{ width: `${msg.meta_json.media_job.progress || 0}%` }" />
+                    </div>
+
+                    <!-- 生成成功 — 图片/视频回显 -->
+                    <div
+                      v-else-if="msg.meta_json.media_job.status === 'succeeded' && mediaJobAssetUrl(msg.meta_json.media_job)"
+                      class="chat-media-result"
+                    >
+                      <template v-if="msg.meta_json.media_job.capability === 'image'">
+                        <img
+                          :src="mediaJobAssetUrl(msg.meta_json.media_job)"
+                          :alt="'生成图片 #' + msg.meta_json.media_job.id"
+                          loading="lazy"
+                          class="chat-media-result-img"
+                          @error="onMediaImageError"
+                        />
+                        <div class="chat-media-result-fallback" style="display:none;">
+                          <span>🖼️ 图片加载失败</span>
+                        </div>
+                      </template>
+                      <video
+                        v-else
+                        :src="mediaJobAssetUrl(msg.meta_json.media_job)"
+                        controls
+                        preload="metadata"
+                        class="chat-media-result-video"
+                      />
+                      <a
+                        class="chat-media-result-link"
+                        :href="mediaJobAssetUrl(msg.meta_json.media_job)"
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        查看原图
+                      </a>
+                    </div>
+
+                    <!-- 生成失败 — 错误信息 -->
+                    <div
+                      v-else-if="msg.meta_json.media_job.status === 'failed'"
+                      class="chat-media-error"
+                    >
+                      <span>❌ 生成失败：{{ msg.meta_json.media_job.error || '未知错误' }}</span>
+                    </div>
+
+                    <!-- 兜底 — 无结果链接时仍然保留进度条 -->
+                    <div v-else class="chat-media-job-progress">
+                      <span :style="{ width: `${msg.meta_json.media_job.progress || 0}%` }" />
+                    </div>
+                  </div>
                 </div>
               </div>
               <div ref="messagesEndRef" />
@@ -643,7 +772,7 @@ function formatTime(isoStr: string): string {
                     <svg width="18" height="18" viewBox="0 0 18 18" fill="none"><line x1="9" y1="4" x2="9" y2="14" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><line x1="4" y1="9" x2="14" y2="9" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
                   </button>
                   <!-- Mode indicator -->
-                  <button class="chat-mode-btn" @click="toggleMenu('mode')">
+                  <button v-show="false" class="chat-mode-btn" @click="toggleMenu('mode')">
                     <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><rect x="2" y="2" width="12" height="12" rx="2" stroke="currentColor" stroke-width="1.2"/><path d="M6 6h4M6 10h4" stroke="currentColor" stroke-width="1" stroke-linecap="round"/></svg>
                     <span>{{ currentModeOption.label }}</span>
                   </button>
@@ -705,6 +834,24 @@ function formatTime(isoStr: string): string {
             Hi，DramaForge 助你爆款写剧一键成片
           </h1>
 
+          <div class="home-entry-switch" role="group" aria-label="创作入口">
+            <button
+              type="button"
+              class="home-entry-btn"
+              :class="currentMode === 'agent' ? 'home-entry-btn-active' : ''"
+              @click="handleCreateAgentEntry"
+            >
+              创作 Agent+
+            </button>
+            <button
+              type="button"
+              class="home-entry-btn"
+              @click="handleDramaAgentEntry"
+            >
+              短剧 Agent
+            </button>
+          </div>
+
           <!-- ─── Input card ─── -->
           <div class="input-card w-full max-w-[777px] rounded-[2px] border-2 border-[#D4C898] transition-all"
             style="margin-top: 35px; background: #FDF5D6; box-shadow: 4px 4px 0 0 rgba(0,0,0,0.4);"
@@ -750,7 +897,7 @@ function formatTime(isoStr: string): string {
               </div>
 
               <!-- ② 模式切换按钮（所有模式） -->
-              <div class="dropdown-wrapper">
+              <div v-show="false" class="dropdown-wrapper">
                 <button
                   class="toolbar-btn-text rounded-[2px] flex items-center text-gray-600 hover:bg-black/5 cursor-pointer transition-colors border-2 border-[#D4C898] bg-transparent"
                   @click="toggleMenu('mode')"
@@ -806,7 +953,7 @@ function formatTime(isoStr: string): string {
                 <div v-if="showModelMenu" class="dropdown-menu dropdown-lg">
                   <div class="dropdown-header">
                     <span class="dropdown-header-title">模型偏好</span>
-                    <div class="auto-toggle" @click="modelAuto = !modelAuto; if(modelAuto) selectedModel = ''">
+                    <div class="auto-toggle" @click="toggleModelAuto">
                       <span class="auto-toggle-label">自动</span>
                       <div class="toggle-switch" :class="modelAuto ? 'toggle-on' : ''">
                         <div class="toggle-dot" />
@@ -831,8 +978,8 @@ function formatTime(isoStr: string): string {
                       v-for="m in filteredChatModels"
                       :key="m.id"
                       class="model-item"
-                      :class="selectedModel === m.id ? 'model-item-active' : ''"
-                      @click="selectModel(m.id)"
+                      :class="selectedModel === m.id && selectedModelCapability === 'chat' ? 'model-item-active' : ''"
+                      @click="selectModel(m.id, 'chat')"
                     >
                       <svg width="18" height="18" viewBox="0 0 18 18" fill="none" class="model-icon"><circle cx="9" cy="9" r="6" stroke="currentColor" stroke-width="1.3"/><path d="M9 6v6M6 9h6" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
                       <div class="flex-1 min-w-0">
@@ -842,7 +989,7 @@ function formatTime(isoStr: string): string {
                         </div>
                         <div class="model-desc">{{ m.desc }}</div>
                       </div>
-                      <svg v-if="selectedModel === m.id" width="14" height="14" viewBox="0 0 14 14" fill="none" class="shrink-0"><path d="M3 7l3 3 5-6" stroke="#7C3AED" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                      <svg v-if="selectedModel === m.id && selectedModelCapability === 'chat'" width="14" height="14" viewBox="0 0 14 14" fill="none" class="shrink-0"><path d="M3 7l3 3 5-6" stroke="#7C3AED" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
                     </div>
                   </template>
                   <!-- Video models -->
@@ -857,8 +1004,8 @@ function formatTime(isoStr: string): string {
                       v-for="m in filteredVideoModels"
                       :key="m.id"
                       class="model-item"
-                      :class="selectedModel === m.id ? 'model-item-active' : ''"
-                      @click="selectModel(m.id)"
+                      :class="selectedModel === m.id && selectedModelCapability === 'video' ? 'model-item-active' : ''"
+                      @click="selectModel(m.id, 'video')"
                     >
                       <svg width="18" height="18" viewBox="0 0 18 18" fill="none" class="model-icon"><rect x="3" y="4" width="12" height="10" rx="2" stroke="currentColor" stroke-width="1.3"/><path d="M7 7.5l4 2.5-4 2.5z" fill="currentColor"/></svg>
                       <div class="flex-1 min-w-0">
@@ -868,7 +1015,7 @@ function formatTime(isoStr: string): string {
                         </div>
                         <div class="model-desc">{{ m.desc }}</div>
                       </div>
-                      <svg v-if="selectedModel === m.id" width="14" height="14" viewBox="0 0 14 14" fill="none" class="shrink-0"><path d="M3 7l3 3 5-6" stroke="#7C3AED" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                      <svg v-if="selectedModel === m.id && selectedModelCapability === 'video'" width="14" height="14" viewBox="0 0 14 14" fill="none" class="shrink-0"><path d="M3 7l3 3 5-6" stroke="#7C3AED" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
                     </div>
                   </template>
                   <!-- Image models -->
@@ -883,8 +1030,8 @@ function formatTime(isoStr: string): string {
                       v-for="m in filteredImageModels"
                       :key="m.id"
                       class="model-item"
-                      :class="selectedModel === m.id ? 'model-item-active' : ''"
-                      @click="selectModel(m.id)"
+                      :class="selectedModel === m.id && selectedModelCapability === 'image' ? 'model-item-active' : ''"
+                      @click="selectModel(m.id, 'image')"
                     >
                       <svg width="18" height="18" viewBox="0 0 18 18" fill="none" class="model-icon"><rect x="3" y="3" width="12" height="12" rx="2" stroke="currentColor" stroke-width="1.3"/><circle cx="7" cy="7.5" r="1.5" stroke="currentColor" stroke-width="1"/><path d="M3 13l3-4 2 2 3-3 4 5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
                       <div class="flex-1 min-w-0">
@@ -894,7 +1041,7 @@ function formatTime(isoStr: string): string {
                         </div>
                         <div class="model-desc">{{ m.desc }}</div>
                       </div>
-                      <svg v-if="selectedModel === m.id" width="14" height="14" viewBox="0 0 14 14" fill="none" class="shrink-0"><path d="M3 7l3 3 5-6" stroke="#7C3AED" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                      <svg v-if="selectedModel === m.id && selectedModelCapability === 'image'" width="14" height="14" viewBox="0 0 14 14" fill="none" class="shrink-0"><path d="M3 7l3 3 5-6" stroke="#7C3AED" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
                     </div>
                   </template>
                 </div>
@@ -1457,6 +1604,49 @@ function formatTime(isoStr: string): string {
   font-family: 'Press Start 2P', monospace;
 }
 
+.home-entry-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 26px;
+  padding: 5px;
+  border: 2px solid #D4C898;
+  border-radius: 999px;
+  background: rgba(253, 245, 214, 0.92);
+  box-shadow: 3px 3px 0 0 rgba(0, 0, 0, 0.35);
+}
+
+.home-entry-btn {
+  height: 34px;
+  min-width: 96px;
+  padding: 0 16px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: #1A1508;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, transform 0.15s ease;
+  white-space: nowrap;
+}
+
+.home-entry-btn:hover {
+  background: rgba(0, 0, 0, 0.06);
+}
+
+.home-entry-btn-active {
+  background: #111111;
+  color: #FFFFFF;
+  box-shadow: 2px 2px 0 0 rgba(0, 0, 0, 0.3);
+}
+
+.home-entry-btn-active:hover {
+  background: #111111;
+  transform: translate(1px, 1px);
+}
+
 /* ─── Input card ─── */
 .input-textarea {
   padding: 15px 28px 64px 20px;
@@ -2010,6 +2200,125 @@ function formatTime(isoStr: string): string {
   color: #2D2515;
   max-width: 90%;
   word-break: break-word;
+}
+
+.chat-media-job-card {
+  width: min(420px, 90%);
+  margin-top: 12px;
+  padding: 12px 14px;
+  border: 2px solid #D4C898;
+  border-radius: 2px;
+  background: #FDF5D6;
+  box-shadow: 3px 3px 0 0 rgba(0,0,0,0.25);
+}
+
+.chat-media-job-main {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.chat-media-job-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: #1A1508;
+}
+
+.chat-media-job-meta {
+  font-size: 12px;
+  line-height: 1.5;
+  color: #6B5D40;
+  word-break: break-word;
+}
+
+.chat-media-job-progress {
+  height: 6px;
+  margin-top: 10px;
+  border: 1px solid #D4C898;
+  background: rgba(255,255,255,0.55);
+  overflow: hidden;
+}
+
+.chat-media-job-progress span {
+  display: block;
+  height: 100%;
+  min-width: 4px;
+  background: #E8A317;
+  transition: width 0.2s ease;
+}
+
+.chat-media-job-link {
+  display: inline-flex;
+  align-items: center;
+  margin-top: 10px;
+  font-size: 12px;
+  font-weight: 700;
+  color: #B87D08;
+}
+
+/* ── Media result (image/video inline display) ── */
+.chat-media-result {
+  margin-top: 12px;
+  border: 2px solid #D4C898;
+  border-radius: 2px;
+  overflow: hidden;
+  background: rgba(0,0,0,0.03);
+}
+
+.chat-media-result-img {
+  display: block;
+  width: 100%;
+  max-height: 480px;
+  object-fit: contain;
+  background: #fff;
+  cursor: pointer;
+  transition: opacity 0.3s ease;
+}
+
+.chat-media-result-video {
+  display: block;
+  width: 100%;
+  max-height: 480px;
+  background: #000;
+  outline: none;
+}
+
+.chat-media-result-fallback {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 32px 16px;
+  color: #8B7A5A;
+  font-size: 13px;
+  background: rgba(0,0,0,0.03);
+}
+
+.chat-media-result-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin: 8px 10px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #B87D08;
+  text-decoration: none;
+  transition: color 0.15s;
+}
+
+.chat-media-result-link:hover {
+  color: #E8A317;
+}
+
+.chat-media-error {
+  margin-top: 10px;
+  padding: 10px 14px;
+  border-radius: 2px;
+  background: rgba(231, 76, 60, 0.08);
+  border: 2px solid rgba(231, 76, 60, 0.2);
+  font-size: 13px;
+  color: #C0392B;
+  line-height: 1.5;
 }
 
 /* ── Thinking dots animation ── */

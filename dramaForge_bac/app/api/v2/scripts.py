@@ -296,6 +296,18 @@ async def cancel_generation(project_id: int, user: CurrentUser):
     return {"message": "No active generation to cancel", "status": entry["status"] if entry else "idle"}
 
 
+def cancel_project_script_generation(project_id: int) -> bool:
+    entry = _gen_registry.pop(project_id, None)
+    if not entry:
+        return False
+    entry["cancelled"] = True
+    entry["status"] = "cancelled"
+    task = entry.get("task")
+    if task and not task.done():
+        task.cancel()
+    return True
+
+
 @router.post("/projects/{project_id}/script/generate-stream")
 async def generate_script_stream(
     project_id: int,

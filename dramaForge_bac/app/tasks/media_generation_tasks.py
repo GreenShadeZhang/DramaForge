@@ -8,6 +8,7 @@ from arq.connections import RedisSettings, create_pool
 from app.core.config import settings
 from app.core.database import AsyncSessionLocal, close_db
 from app.services.media_generation_service import media_generation_service
+from app.tasks.storyboard_tasks import run_storyboard_generation_job
 
 
 async def run_media_generation_job(ctx: dict, job_id: int) -> dict:
@@ -41,6 +42,6 @@ async def shutdown(ctx: dict) -> None:
 
 
 class WorkerSettings:
-    functions = [run_media_generation_job]
+    functions = [run_media_generation_job, run_storyboard_generation_job]
     redis_settings = RedisSettings.from_dsn(settings.redis_url)
     on_shutdown = shutdown

@@ -187,6 +187,20 @@ def schedule_compose_task(episode_id: int, project_id: int) -> str:
     return task_id
 
 
+def cancel_project_video_tasks(segment_ids: list[int] | None = None, episode_ids: list[int] | None = None) -> list[str]:
+    task_ids = {f"segment_{segment_id}" for segment_id in segment_ids or []}
+    task_ids.update(f"compose_{episode_id}" for episode_id in episode_ids or [])
+    cancelled: list[str] = []
+    for task_id in task_ids:
+        task = _active_tasks.pop(task_id, None)
+        if not task:
+            continue
+        if not task.done():
+            task.cancel()
+        cancelled.append(task_id)
+    return cancelled
+
+
 def get_task_status(task_id: str) -> dict:
     """Get the status of an active task."""
     task = _active_tasks.get(task_id)

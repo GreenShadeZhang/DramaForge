@@ -66,6 +66,27 @@ export const useStoryboardStore = defineStore('storyboard', () => {
     generatingStoryboard.value = false
   }
 
+  async function cancelStoryboardGeneration(projectId: number, episodeId: number) {
+    try {
+      await storyboardApi.cancelGeneration(projectId, episodeId)
+    } catch (e: any) {
+      console.warn('Failed to cancel storyboard generation', e)
+    }
+    generatingStoryboard.value = false
+  }
+
+  /** Reset all state — call when switching projects or leaving the storyboard editor. */
+  function reset() {
+    storyboard.value = null
+    currentSegmentIndex.value = 0
+    currentShotIndex.value = 0
+    previewTarget.value = 'shot'
+    loading.value = false
+    generatingStoryboard.value = false
+    undoStack.value = []
+    redoStack.value = []
+  }
+
   function selectSegment(index: number) {
     currentSegmentIndex.value = index
     currentShotIndex.value = 0
@@ -146,10 +167,12 @@ export const useStoryboardStore = defineStore('storyboard', () => {
     fetchStoryboard,
     generateStoryboard,
     onStoryboardGenerated,
+    cancelStoryboardGeneration,
     selectSegment,
     selectShot,
     pushUndo,
     undo,
     redo,
+    reset,
   }
 })

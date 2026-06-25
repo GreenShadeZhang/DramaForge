@@ -40,7 +40,31 @@ export interface SendMessageRequest {
   project_id?: number
   stream?: boolean
   model?: string
+  model_capability?: 'chat' | 'image' | 'video'
   temperature?: number
+}
+
+export type AgentIntentKind = 'chat' | 'image' | 'video'
+
+export interface AgentIntentPayload {
+  intent: AgentIntentKind
+  confidence: number
+  matched_by: string
+  prompt: string
+  slots: Record<string, any>
+}
+
+export interface MediaJobPayload {
+  id: number
+  capability: 'image' | 'video'
+  provider_id: number | null
+  model_id: string
+  provider_job_id: string | null
+  status: string
+  progress: number
+  request_json: Record<string, any>
+  result_assets_json: any[]
+  error: string | null
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -95,6 +119,8 @@ export async function sendMessageStream(
   handlers: {
     onStart?: (conversationId: number, title: string) => void
     onContent?: (chunk: string) => void
+    onAgentIntent?: (intent: AgentIntentPayload) => void
+    onMediaJob?: (job: MediaJobPayload) => void
     onDone?: (messageId: number) => void
     onError?: (error: string) => void
   },
@@ -173,6 +199,12 @@ export async function sendMessageStream(
               break
             case 'delta':
               handlers.onContent?.(payload.content ?? '')
+              break
+            case 'agent_intent':
+              handlers.onAgentIntent?.(payload)
+              break
+            case 'media_job':
+              handlers.onMediaJob?.(payload)
               break
             case 'done':
               handlers.onDone?.(payload.message_id)

@@ -1,8 +1,10 @@
 """
 DramaForge v2.0 — Application Entry Point
 """
+import asyncio
+import signal
 import time
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 
 from fastapi import FastAPI, Request, HTTPException
@@ -14,6 +16,46 @@ from sqlalchemy import text
 
 from app.api.v2 import projects, scripts, assets, episodes, storyboard, websocket, users, chat, billing, payment, user_ai_config
 from app.core.config import settings
+
+
+async def start_embedded_worker():
+    from arq.worker import create_worker
+
+    from app.tasks.media_generation_tasks import WorkerSettings
+
+    worker = create_worker(WorkerSettings, handle_signals=False, on_shutdown=None)
+    task = asyncio.create_task(worker.async_run(), name="media-generation-worker")
+
+    def log_worker_exit(done_task: asyncio.Task) -> None:
+        if done_task.cancelled():
+            return
+        error = done_task.exception()
+        if error:
+            logger.error("Embedded media generation worker stopped unexpectedly: {}", error)
+
+    task.add_done_callback(log_worker_exit)
+    logger.info("Embedded media generation worker started")
+    return worker, task
+
+
+async def stop_embedded_worker(worker, task: asyncio.Task) -> None:
+    if task.done():
+        with suppress(asyncio.CancelledError, Exception):
+            await task
+        if worker.pool:
+            await worker.pool.delete(worker.health_check_key)
+            await worker.pool.close(close_connection_pool=True)
+            worker._pool = None
+        return
+
+    worker.handle_sig(signal.SIGTERM)
+    with suppress(asyncio.CancelledError, Exception):
+        await task
+    if worker.pool:
+        await worker.pool.delete(worker.health_check_key)
+        await worker.pool.close(close_connection_pool=True)
+        worker._pool = None
+    logger.info("Embedded media generation worker stopped")
 
 
 @asynccontextmanager
@@ -41,9 +83,12 @@ async def lifespan(app: FastAPI):
         await seed_plans(session)
     logger.info("Billing plans seeded")
 
+    media_worker, media_worker_task = await start_embedded_worker()
+
     yield  # ── Application running ──
 
     # ── Shutdown ──
+    await stop_embedded_worker(media_worker, media_worker_task)
     await ai_hub.close()
     await close_db()
     logger.info("DramaForge v2.0 shut down")

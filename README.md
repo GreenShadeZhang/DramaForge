@@ -25,7 +25,8 @@ Step 1: Script -> Step 2: Assets (Characters + Scenes) -> Step 3: Episode Videos
 ### Backend
 cd dramaForge_bac
 pip install -r requirements.txt
-uvicorn app.main:app --reload --port 8000
+
+uvicorn app.main:app --host 0.0.0.0 --port 8000
 
 ### Frontend
 cd dramaForge_web

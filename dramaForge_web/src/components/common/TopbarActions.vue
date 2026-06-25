@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useBillingStore } from '@/stores/billing'
 import { useAuthStore } from '@/stores/auth'
@@ -13,6 +14,9 @@ const emit = defineEmits<{
 const router = useRouter()
 const billingStore = useBillingStore()
 const authStore = useAuthStore()
+const userMenuOpen = ref(false)
+const loggingOut = ref(false)
+const userMenuRef = ref<HTMLElement | null>(null)
 
 function openAIConfig() {
   router.push('/settings')
@@ -20,11 +24,47 @@ function openAIConfig() {
 
 function handleAvatarClick() {
   if (authStore.isLoggedIn) {
-    return
+    userMenuOpen.value = !userMenuOpen.value
   } else {
     router.push('/login')
   }
 }
+
+function closeUserMenu() {
+  userMenuOpen.value = false
+}
+
+function handleDocumentClick(event: MouseEvent) {
+  if (!userMenuRef.value) return
+  if (!userMenuRef.value.contains(event.target as Node)) {
+    closeUserMenu()
+  }
+}
+
+function openSettings() {
+  closeUserMenu()
+  router.push('/settings')
+}
+
+async function handleLogout() {
+  if (loggingOut.value) return
+  loggingOut.value = true
+  try {
+    await authStore.doLogout()
+    closeUserMenu()
+    router.push('/login')
+  } finally {
+    loggingOut.value = false
+  }
+}
+
+onMounted(() => {
+  document.addEventListener('click', handleDocumentClick)
+})
+
+onBeforeUnmount(() => {
+  document.removeEventListener('click', handleDocumentClick)
+})
 </script>
 
 <template>
@@ -61,13 +101,38 @@ function handleAvatarClick() {
       <span>AI 配置</span>
     </button>
 
-    <!-- Avatar -->
-    <div
-      class="tba-avatar"
-      :title="authStore.isLoggedIn ? authStore.displayName : '未登录'"
-      @click="handleAvatarClick"
-    >
-      {{ authStore.isLoggedIn ? authStore.displayName.charAt(0).toUpperCase() : 'U' }}
+    <div ref="userMenuRef" class="tba-user-menu">
+      <button
+        class="tba-avatar"
+        type="button"
+        :title="authStore.isLoggedIn ? authStore.displayName : '未登录'"
+        @click="handleAvatarClick"
+      >
+        {{ authStore.isLoggedIn ? authStore.displayName.charAt(0).toUpperCase() : 'U' }}
+      </button>
+
+      <Transition name="user-menu">
+        <div v-if="authStore.isLoggedIn && userMenuOpen" class="tba-user-popover">
+          <div class="tba-user-summary">
+            <span class="tba-user-name">{{ authStore.displayName }}</span>
+            <span class="tba-user-email">{{ authStore.user?.email || '已登录账号' }}</span>
+          </div>
+          <button type="button" class="tba-menu-item" @click="openSettings">
+            <svg width="15" height="15" viewBox="0 0 16 16" fill="none">
+              <path d="M8 2.25l1.05 2.68 2.7 1.07-2.7 1.07L8 9.75 6.95 7.07 4.25 6l2.7-1.07L8 2.25z" stroke="currentColor" stroke-width="1.35" stroke-linejoin="round"/>
+              <path d="M12.25 9.25l.55 1.4 1.45.6-1.45.6-.55 1.4-.55-1.4-1.45-.6 1.45-.6.55-1.4z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/>
+            </svg>
+            账号设置
+          </button>
+          <button type="button" class="tba-menu-item tba-menu-item--danger" :disabled="loggingOut" @click="handleLogout">
+            <svg width="15" height="15" viewBox="0 0 16 16" fill="none">
+              <path d="M6.25 3H4.5A1.5 1.5 0 003 4.5v7A1.5 1.5 0 004.5 13h1.75" stroke="currentColor" stroke-width="1.35" stroke-linecap="round"/>
+              <path d="M9 5l3 3-3 3M12 8H6.5" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+            {{ loggingOut ? '退出中...' : '退出登录' }}
+          </button>
+        </div>
+      </Transition>
     </div>
   </div>
 </template>
@@ -145,6 +210,10 @@ function handleAvatarClick() {
 }
 
 /* ── Avatar ── */
+.tba-user-menu {
+  position: relative;
+}
+
 .tba-avatar {
   width: 32px;
   height: 32px;
@@ -159,9 +228,96 @@ function handleAvatarClick() {
   cursor: pointer;
   transition: all 0.15s;
   margin-left: 2px;
+  border: none;
 }
 .tba-avatar:hover {
   background: #C88A0C;
+}
+
+.tba-user-popover {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 80;
+  width: 210px;
+  padding: 8px;
+  border: 1px solid #D4C898;
+  border-radius: 8px;
+  background: #FEF9E7;
+  box-shadow: 0 14px 40px rgba(45, 37, 21, 0.18);
+}
+
+.tba-user-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 8px 9px 10px;
+  border-bottom: 1px solid rgba(212, 200, 152, 0.75);
+  margin-bottom: 6px;
+}
+
+.tba-user-name {
+  font-size: 13px;
+  font-weight: 700;
+  color: #2D2515;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tba-user-email {
+  font-size: 11px;
+  color: #8a7d62;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tba-menu-item {
+  width: 100%;
+  height: 34px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 9px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: #6B5D40;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.tba-menu-item:hover:not(:disabled) {
+  background: rgba(232, 163, 23, 0.1);
+  color: #2D2515;
+}
+
+.tba-menu-item--danger {
+  color: #b91c1c;
+}
+
+.tba-menu-item--danger:hover:not(:disabled) {
+  background: rgba(220, 38, 38, 0.08);
+  color: #991b1b;
+}
+
+.tba-menu-item:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.user-menu-enter-active,
+.user-menu-leave-active {
+  transition: opacity 0.14s ease, transform 0.14s ease;
+}
+
+.user-menu-enter-from,
+.user-menu-leave-to {
+  opacity: 0;
+  transform: translateY(-4px);
 }
 
 .tba-ai-config {

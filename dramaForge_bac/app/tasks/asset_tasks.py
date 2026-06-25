@@ -147,6 +147,20 @@ def schedule_character_regen_task(
     return task_id
 
 
+def cancel_project_asset_tasks(project_id: int, character_ids: list[int] | None = None) -> list[str]:
+    task_ids = {f"assets_{project_id}"}
+    task_ids.update(f"regen_char_{char_id}" for char_id in character_ids or [])
+    cancelled: list[str] = []
+    for task_id in task_ids:
+        task = _active_tasks.pop(task_id, None)
+        if not task:
+            continue
+        if not task.done():
+            task.cancel()
+        cancelled.append(task_id)
+    return cancelled
+
+
 def get_task_status(task_id: str) -> dict:
     """Get the status of an active task."""
     task = _active_tasks.get(task_id)

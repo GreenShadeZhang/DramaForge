@@ -8,7 +8,7 @@ export interface VideoGenerateOptions {
 }
 
 export interface StoryboardGenerationStatus {
-  status: 'idle' | 'generating' | 'completed' | 'failed'
+  status: 'idle' | 'generating' | 'completed' | 'failed' | 'cancelled'
   progress: number
   message: string
 }
@@ -26,6 +26,11 @@ export const storyboardApi = {
 
   getGenerationStatus(projectId: number, episodeId: number) {
     return api.get<StoryboardGenerationStatus>(`/projects/${projectId}/episodes/${episodeId}/storyboard/status`)
+  },
+
+  /** 取消分镜生成 */
+  cancelGeneration(projectId: number, episodeId: number) {
+    return api.post<{ message: string; status: string }>(`/projects/${projectId}/episodes/${episodeId}/storyboard/cancel`)
   },
 
   /** 编辑分镜 */

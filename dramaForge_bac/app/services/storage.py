@@ -6,6 +6,7 @@ Manages file storage paths, downloads from URLs, and serves asset URLs.
 
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 from typing import Optional
 
@@ -157,6 +158,18 @@ class StorageService:
             path.unlink()
             return True
         return False
+
+    def delete_project_tree(self, project_id: int) -> bool:
+        root = settings.projects_path.resolve()
+        target = (root / str(project_id)).resolve()
+        if target.parent != root:
+            raise ValueError("Invalid project storage path")
+        if not target.exists():
+            return False
+        if not target.is_dir():
+            raise ValueError("Project storage path is not a directory")
+        shutil.rmtree(target)
+        return True
 
 
 # Module-level singleton

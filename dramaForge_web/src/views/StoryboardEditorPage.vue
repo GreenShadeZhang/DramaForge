@@ -216,9 +216,13 @@ function startPolling() {
       if (sbStore.generatingStoryboard) {
         const { data: status } = await storyboardApi.getGenerationStatus(projectId, episodeId)
         storyboardGenerationStatus.value = status
-        if (status.status === 'failed') {
+        if (status.status === 'failed' || status.status === 'cancelled') {
           sbStore.onStoryboardGenerated()
-          showToast(status.message || '分镜脚本生成失败', 'error')
+          if (status.status === 'cancelled') {
+            showToast(status.message || '分镜生成已取消', 'info')
+          } else {
+            showToast(status.message || '分镜脚本生成失败', 'error')
+          }
         }
       }
 
@@ -313,6 +317,8 @@ function notifyUser(title: string, body: string) {
 }
 
 onMounted(async () => {
+  // Reset store to prevent stale data from a previous project leaking in
+  sbStore.reset()
   await Promise.all([
     sbStore.fetchStoryboard(projectId, episodeId),
     assetsStore.fetchAssets(projectId),
@@ -657,6 +663,17 @@ async function handleGenerateStoryboard() {
   }
 }
 
+async function handleCancelStoryboard() {
+  stopPolling()
+  await sbStore.cancelStoryboardGeneration(projectId, episodeId)
+  storyboardGenerationStatus.value = {
+    status: 'idle',
+    progress: 0,
+    message: '分镜生成已取消',
+  }
+  showToast('分镜生成已取消', 'info')
+}
+
 // ── Reset editing when segment changes ──
 watch(() => sbStore.currentSegmentIndex, () => {
   editingShot.value = false
@@ -945,20 +962,27 @@ watch(() => sbStore.currentSegmentIndex, () => {
 
             <!-- Generating storyboard state -->
             <div v-else-if="sbStore.generatingStoryboard" class="sb-empty">
-              <div class="sb-empty-icon">
-                <div class="w-14 h-14 border-4 border-[#E8A317] border-t-transparent rounded-full animate-spin" />
-              </div>
               <h3 class="sb-empty-title">正在生成分镜脚本...</h3>
               <p class="sb-empty-desc">{{ storyboardGenerationStatus.message || 'AI 正在分析剧本并拆分镜头，请稍候' }}</p>
+
+              <!-- Enhanced progress bar -->
               <div class="sb-storyboard-progress">
                 <div class="sb-storyboard-progress-head">
                   <span>分镜生成进度</span>
                   <strong>{{ storyboardGenerationStatus.progress || 1 }}%</strong>
                 </div>
                 <div class="sb-storyboard-progress-track">
-                  <span :style="{ width: `${storyboardGenerationStatus.progress || 1}%` }" />
+                  <span
+                    class="sb-progress-fill"
+                    :style="{ width: `${storyboardGenerationStatus.progress || 1}%` }"
+                  />
                 </div>
               </div>
+
+              <!-- Cancel button -->
+              <button class="sb-btn sb-btn--outline sb-btn--sm mt-3" @click="handleCancelStoryboard">
+                取消生成
+              </button>
             </div>
           </div>
 
@@ -1248,19 +1272,44 @@ watch(() => sbStore.currentSegmentIndex, () => {
 }
 
 .sb-storyboard-progress-track {
-  height: 7px;
+  height: 8px;
   overflow: hidden;
-  border-radius: 999px;
+  border-radius: 2px;
   background: rgba(168, 130, 60, 0.24);
+  border: 1px solid rgba(168, 130, 60, 0.12);
 }
 
-.sb-storyboard-progress-track span {
+/* ═══ 进度条增强 ═══ */
+.sb-progress-fill {
   display: block;
   height: 100%;
   min-width: 8px;
   border-radius: inherit;
-  background: linear-gradient(90deg, #E8A317 0%, #2D2515 100%);
-  transition: width 0.25s ease;
+  background: linear-gradient(90deg, #E8A317 0%, #F5C34B 40%, #2D2515 100%);
+  transition: width 0.35s ease;
+  position: relative;
+  overflow: hidden;
+}
+
+/* 光泽扫过 */
+.sb-progress-fill::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(255, 255, 255, 0.35) 30%,
+    rgba(255, 255, 255, 0.5) 50%,
+    rgba(255, 255, 255, 0.35) 70%,
+    transparent 100%
+  );
+  animation: sb-shimmer 1.8s ease-in-out infinite;
+}
+
+@keyframes sb-shimmer {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(200%); }
 }
 
 /* ═══ Toast ═══ */
