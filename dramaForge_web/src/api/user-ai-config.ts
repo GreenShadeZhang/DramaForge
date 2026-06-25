@@ -41,6 +41,16 @@ export async function discoverModels(id: number): Promise<{ models: string[]; co
   return data
 }
 
+export async function discoverModelsFromUrl(payload: {
+  provider_type: string
+  auth_type: string
+  base_url: string
+  api_key: string
+}): Promise<{ models: string[]; count: number }> {
+  const { data } = await apiClient.post('/user-ai/discover', payload)
+  return data
+}
+
 export async function createModel(providerId: number, payload: ModelConfigCreate): Promise<ModelConfig> {
   const body = { ...payload, capability: payload.capability ?? payload.capability_type }
   delete (body as any).capability_type

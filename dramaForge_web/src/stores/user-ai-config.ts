@@ -101,6 +101,15 @@ export const useUserAIConfigStore = defineStore('user-ai-config', () => {
     return aiConfigApi.discoverModels(providerId)
   }
 
+  async function discoverModelsFromUrl(payload: {
+    provider_type: string
+    auth_type: string
+    base_url: string
+    api_key: string
+  }) {
+    return aiConfigApi.discoverModelsFromUrl(payload)
+  }
+
   async function addModel(providerId: number, data: ModelConfigCreate) {
     const model = await aiConfigApi.createModel(providerId, data)
     const provider = providers.value.find((p) => p.id === providerId)
@@ -166,6 +175,7 @@ export const useUserAIConfigStore = defineStore('user-ai-config', () => {
     removeProvider,
     testKey,
     discoverModels,
+    discoverModelsFromUrl,
     addModel,
     updateModel,
     removeModel,

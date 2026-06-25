@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useUserAIConfigStore } from '@/stores/user-ai-config'
 import type { MediaCapability, ModelConfig, ProviderConfig, VideoModelPreset } from '@/types/user-ai-config'
@@ -47,6 +47,44 @@ const testing = ref(false)
 const toast = ref<{ show: boolean; msg: string; type: 'ok' | 'err' }>({ show: false, msg: '', type: 'ok' })
 const videoPresetIdKey = 'video_preset_id'
 let videoModelRowSeq = 0
+
+const fetchedModels = ref<string[]>([])
+const fetchingModels = ref(false)
+const fetchStatus = ref<'idle' | 'ok' | 'err'>('idle')
+const fetchStatusMsg = ref('')
+const selectedModels = ref<Set<string>>(new Set())
+const modelSearch = ref('')
+const dropdownOpen = ref(false)
+const showManualTextarea = ref(false)
+const modelDropdownRef = ref<HTMLElement | null>(null)
+const modelSearchRef = ref<HTMLInputElement | null>(null)
+
+const filteredFetchedModels = computed(() => {
+  if (!modelSearch.value.trim()) return fetchedModels.value
+  const q = modelSearch.value.trim().toLowerCase()
+  return fetchedModels.value.filter((m) => m.toLowerCase().includes(q))
+})
+
+function toggleDropdown() {
+  dropdownOpen.value = !dropdownOpen.value
+  if (dropdownOpen.value) {
+    nextTick(() => modelSearchRef.value?.focus())
+  }
+}
+
+function closeDropdown() {
+  dropdownOpen.value = false
+}
+
+function onDropdownKeydown(e: KeyboardEvent) {
+  if (e.key === 'Escape') closeDropdown()
+}
+
+function onClickOutside(e: MouseEvent) {
+  if (modelDropdownRef.value && !modelDropdownRef.value.contains(e.target as Node)) {
+    closeDropdown()
+  }
+}
 
 interface VideoModelRow {
   key: number
@@ -110,6 +148,13 @@ const filteredProviders = computed(() =>
 
 onMounted(async () => {
   await Promise.all([aiStore.fetchProviders(), aiStore.fetchDefaults(), aiStore.fetchVideoModelPresets()])
+  document.addEventListener('mousedown', onClickOutside)
+  document.addEventListener('keydown', onDropdownKeydown)
+})
+
+onUnmounted(() => {
+  document.removeEventListener('mousedown', onClickOutside)
+  document.removeEventListener('keydown', onDropdownKeydown)
 })
 
 function showToast(msg: string, type: 'ok' | 'err' = 'ok') {
@@ -130,6 +175,98 @@ function normalizedModels() {
     .split(/[\n,，]/)
     .map((item) => item.trim())
     .filter(Boolean)
+}
+
+async function fetchModelsFromProvider() {
+  if (!providerForm.value.base_url.trim()) return showToast('请先填写接口地址', 'err')
+  if (!providerForm.value.api_key.trim()) return showToast('请先填写 API Key', 'err')
+  fetchingModels.value = true
+  fetchStatus.value = 'idle'
+  fetchStatusMsg.value = ''
+  dropdownOpen.value = false
+  fetchedModels.value = []
+  selectedModels.value = new Set()
+  providerForm.value.model_ids = ''
+  try {
+    const result = await aiStore.discoverModelsFromUrl({
+      provider_type: providerForm.value.provider_type,
+      auth_type: providerForm.value.auth_type,
+      base_url: providerForm.value.base_url.trim(),
+      api_key: providerForm.value.api_key.trim(),
+    })
+    fetchedModels.value = result.models || []
+    if (fetchedModels.value.length === 0) {
+      fetchStatus.value = 'err'
+      fetchStatusMsg.value = '未获取到模型列表'
+    } else {
+      fetchStatus.value = 'ok'
+      fetchStatusMsg.value = `发现 ${fetchedModels.value.length} 个模型`
+      dropdownOpen.value = true
+      nextTick(() => modelSearchRef.value?.focus())
+    }
+  } catch (e: any) {
+    fetchStatus.value = 'err'
+    fetchStatusMsg.value = e.response?.data?.detail || e.message || '获取失败，请检查地址和密钥'
+  } finally {
+    fetchingModels.value = false
+  }
+}
+
+function toggleModelSelection(modelId: string) {
+  const s = new Set(selectedModels.value)
+  if (s.has(modelId)) {
+    s.delete(modelId)
+  } else {
+    s.add(modelId)
+  }
+  selectedModels.value = s
+  syncSelectedToTextarea()
+}
+
+function syncSelectedToTextarea() {
+  const manual = providerForm.value.model_ids
+    .split(/[\n,，]/)
+    .map((item) => item.trim())
+    .filter(Boolean)
+  const fetchedSet = new Set(fetchedModels.value)
+  const manualOnly = manual.filter((m) => !fetchedSet.has(m))
+  const result = [...selectedModels.value, ...manualOnly]
+  providerForm.value.model_ids = result.join('\n')
+}
+
+function onManualModelInput() {
+  if (fetchedModels.value.length === 0) return
+  const current = normalizedModels()
+  const s = new Set<string>()
+  for (const m of current) {
+    if (fetchedModels.value.includes(m)) s.add(m)
+  }
+  selectedModels.value = s
+}
+
+function selectAllModels() {
+  const s = new Set(selectedModels.value)
+  for (const m of filteredFetchedModels.value) {
+    s.add(m)
+  }
+  selectedModels.value = s
+  syncSelectedToTextarea()
+}
+
+function deselectAllModels() {
+  const s = new Set(selectedModels.value)
+  for (const m of filteredFetchedModels.value) {
+    s.delete(m)
+  }
+  selectedModels.value = s
+  syncSelectedToTextarea()
+}
+
+function removeModelFromSelection(modelId: string) {
+  const s = new Set(selectedModels.value)
+  s.delete(modelId)
+  selectedModels.value = s
+  syncSelectedToTextarea()
 }
 
 function textList(value: unknown) {
@@ -228,6 +365,13 @@ function videoCapabilitySummary(row: VideoModelRow) {
 function openAddProvider() {
   editingProvider.value = null
   testResult.value = null
+  fetchedModels.value = []
+  selectedModels.value = new Set()
+  modelSearch.value = ''
+  fetchStatus.value = 'idle'
+  fetchStatusMsg.value = ''
+  dropdownOpen.value = false
+  showManualTextarea.value = false
   providerForm.value = {
     name: '',
     provider_type: 'openai_compatible',
@@ -263,6 +407,13 @@ function openEditProvider(provider: ProviderConfig) {
   const videoModels = modelsForCapability(provider, 'video').map(videoModelRowFromModel)
   editingProvider.value = provider
   testResult.value = null
+  fetchedModels.value = []
+  fetchStatus.value = 'idle'
+  fetchStatusMsg.value = ''
+  dropdownOpen.value = false
+  showManualTextarea.value = false
+  const existingModelIds = modelsForCapability(provider, activeCapability.value).map((model) => model.model_id)
+  selectedModels.value = new Set(existingModelIds)
   providerForm.value = {
     name: provider.name,
     provider_type: provider.provider_type,
@@ -381,9 +532,13 @@ async function saveProvider() {
         }
       }
     } else {
-      const existing = new Set(modelsForCapability(provider, activeCapability.value).map((model) => model.model_id))
+      // 先删除该能力下所有旧模型
+      const existingModels = modelsForCapability(editingProvider.value || provider, activeCapability.value)
+      for (const model of existingModels) {
+        await aiStore.removeModel(model.id)
+      }
+      // 再重新添加选中的模型
       for (const modelId of modelIds) {
-        if (existing.has(modelId)) continue
         await aiStore.addModel(provider.id, {
           capability: activeCapability.value,
           model_id: modelId,
@@ -562,14 +717,126 @@ function decreasePriority() {
                 </div>
               </div>
 
-              <label v-if="activeCapability !== 'video'" class="form-row form-row-required">
-                <span>支持的模型</span>
-                <textarea
-                  v-model="providerForm.model_ids"
-                  rows="3"
-                  placeholder="请输入模型名，多个模型可用换行或逗号分隔"
-                />
-              </label>
+              <div v-if="activeCapability !== 'video'" class="form-row form-row-required">
+                <span>
+                  支持的模型
+                  <span v-if="selectedModels.size > 0" class="model-badge">{{ selectedModels.size }}</span>
+                </span>
+                <div class="model-selector">
+                  <div class="model-fetch-row">
+                    <button
+                      type="button"
+                      class="fetch-models-btn"
+                      :class="{ 'fetch-models-btn--loading': fetchingModels }"
+                      :disabled="fetchingModels"
+                      @click="fetchModelsFromProvider"
+                    >
+                      <svg v-if="!fetchingModels" class="fetch-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <polyline points="23 4 23 10 17 10" />
+                        <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
+                      </svg>
+                      <svg v-else class="fetch-icon fetch-spinner" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <polyline points="23 4 23 10 17 10" />
+                        <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
+                      </svg>
+                      {{ fetchingModels ? '获取中...' : (fetchStatus === 'idle' ? '获取模型列表' : '重新获取') }}
+                    </button>
+                    <Transition name="status-fade">
+                      <span v-if="!fetchingModels && fetchStatus === 'ok'" class="fetch-status fetch-status--ok">
+                        <svg class="status-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                          <polyline points="20 6 9 17 4 12" />
+                        </svg>
+                        {{ fetchStatusMsg }}
+                      </span>
+                    </Transition>
+                    <Transition name="status-fade">
+                      <span v-if="!fetchingModels && fetchStatus === 'err'" class="fetch-status fetch-status--err">
+                        <svg class="status-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                          <circle cx="12" cy="12" r="10" />
+                          <line x1="12" y1="8" x2="12" y2="12" />
+                          <line x1="12" y1="16" x2="12.01" y2="16" />
+                        </svg>
+                        {{ fetchStatusMsg }}
+                      </span>
+                    </Transition>
+                  </div>
+
+                  <!-- 下拉选择器 -->
+                  <div v-if="fetchedModels.length > 0" ref="modelDropdownRef" class="ms-dropdown" @click.stop>
+                    <div class="ms-trigger" @click.stop="toggleDropdown">
+                      <div v-if="selectedModels.size === 0" class="ms-placeholder">请选择模型</div>
+                      <div v-else class="ms-chips">
+                        <span
+                          v-for="model in Array.from(selectedModels)"
+                          :key="model"
+                          class="ms-chip"
+                          @click.stop="removeModelFromSelection(model)"
+                        >
+                          {{ model }}
+                          <svg class="ms-chip-x" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                            <line x1="3" y1="3" x2="9" y2="9" /><line x1="9" y1="3" x2="3" y2="9" />
+                          </svg>
+                        </span>
+                      </div>
+                      <svg class="ms-arrow" :class="{ 'ms-arrow--open': dropdownOpen }" viewBox="0 0 12 8" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                        <polyline points="1 1 6 6 11 1" />
+                      </svg>
+                    </div>
+
+                    <Transition name="dropdown-fade">
+                      <div v-if="dropdownOpen" class="ms-panel">
+                        <div class="ms-panel-search">
+                          <svg class="ms-search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" />
+                          </svg>
+                          <input
+                            ref="modelSearchRef"
+                            v-model="modelSearch"
+                            class="ms-search-input"
+                            placeholder="搜索模型…"
+                          />
+                          <div class="ms-panel-actions">
+                            <button type="button" class="ms-action-btn" @click.stop="selectAllModels">全选</button>
+                            <button type="button" class="ms-action-btn" @click.stop="deselectAllModels">清除</button>
+                          </div>
+                        </div>
+                        <div class="ms-list">
+                          <div
+                            v-for="model in filteredFetchedModels"
+                            :key="model"
+                            class="ms-option"
+                            :class="{ 'ms-option--selected': selectedModels.has(model) }"
+                            @click.stop="toggleModelSelection(model)"
+                          >
+                            <span class="ms-checkbox" :class="{ 'ms-checkbox--checked': selectedModels.has(model) }">
+                              <svg v-if="selectedModels.has(model)" class="ms-check" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                                <polyline points="2.5 7 5.5 10 11.5 4" />
+                              </svg>
+                            </span>
+                            <span class="ms-option-label">{{ model }}</span>
+                          </div>
+                          <div v-if="filteredFetchedModels.length === 0" class="ms-empty">未找到匹配模型</div>
+                        </div>
+                        <div class="ms-footer">
+                          <span class="ms-footer-info">已选 {{ selectedModels.size }} / {{ fetchedModels.length }}</span>
+                          <button type="button" class="ms-footer-btn" @click.stop="showManualTextarea = !showManualTextarea">手动补充</button>
+                        </div>
+                      </div>
+                    </Transition>
+                  </div>
+
+                  <Transition name="manual-slide">
+                    <textarea
+                      v-if="showManualTextarea || fetchedModels.length === 0"
+                      v-model="providerForm.model_ids"
+                      rows="2"
+                      class="ms-manual-input"
+                      :placeholder="fetchedModels.length > 0 ? '手动输入模型名，多个用换行或逗号分隔' : '请输入模型名，多个模型可用换行或逗号分隔'"
+                      @input="onManualModelInput"
+                    />
+                  </Transition>
+                </div>
+              </div>
 
               <div v-if="activeCapability === 'video'" class="form-row video-capability-row">
                 <span>视频模型</span>
@@ -1173,6 +1440,433 @@ function decreasePriority() {
   color: #8b949e;
   font-size: 12px;
   line-height: 1.6;
+}
+
+.model-selector {
+  display: grid;
+  gap: 10px;
+}
+
+.model-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  margin-left: 6px;
+  border-radius: 9px;
+  background: #3b82f6;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+  vertical-align: middle;
+}
+
+/* === 获取按钮 === */
+.model-fetch-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.fetch-models-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 36px;
+  padding: 0 16px;
+  border: 1.5px solid #3b82f6;
+  border-radius: 8px;
+  background: transparent;
+  color: #3b82f6;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.25s ease;
+  user-select: none;
+}
+
+.fetch-models-btn:hover:not(:disabled) {
+  background: #3b82f6;
+  color: #fff;
+  box-shadow: 0 2px 8px rgba(59, 130, 246, 0.3);
+}
+
+.fetch-models-btn:active:not(:disabled) {
+  transform: scale(0.97);
+  transition: transform 0.1s;
+}
+
+.fetch-models-btn--loading {
+  opacity: 0.8;
+  pointer-events: none;
+}
+
+.fetch-icon {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+}
+
+.fetch-spinner {
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* === 状态文字 === */
+.fetch-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.fetch-status--ok {
+  color: #10b981;
+}
+
+.fetch-status--err {
+  color: #ef4444;
+}
+
+.status-icon {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+}
+
+.status-fade-enter-active {
+  transition: opacity 0.3s ease;
+}
+
+.status-fade-enter-from {
+  opacity: 0;
+}
+
+/* === 下拉选择器 === */
+.ms-dropdown {
+  position: relative;
+}
+
+.ms-trigger {
+  display: flex;
+  align-items: center;
+  height: 42px;
+  padding: 0 10px;
+  border: 1.5px solid #e2e8f0;
+  border-radius: 8px;
+  background: #fff;
+  cursor: pointer;
+  transition: border-color 0.2s;
+  overflow: hidden;
+}
+
+.ms-trigger:hover {
+  border-color: #93c5fd;
+}
+
+.ms-placeholder {
+  flex: 1;
+  color: #94a3b8;
+  font-size: 13px;
+  user-select: none;
+}
+
+.ms-chips {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 1;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+
+.ms-chips::-webkit-scrollbar {
+  display: none;
+}
+
+.ms-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  height: 24px;
+  padding: 0 6px 0 8px;
+  border-radius: 6px;
+  background: #eff6ff;
+  color: #1e40af;
+  font-size: 11px;
+  white-space: nowrap;
+  flex-shrink: 0;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.ms-chip:hover {
+  background: #fee2e2;
+  color: #dc2626;
+}
+
+.ms-chip-x {
+  width: 10px;
+  height: 10px;
+  flex-shrink: 0;
+  stroke-width: 2.5;
+}
+
+.ms-arrow {
+  width: 12px;
+  height: 8px;
+  flex-shrink: 0;
+  margin-left: 8px;
+  color: #94a3b8;
+  transition: transform 0.25s ease;
+}
+
+.ms-arrow--open {
+  transform: rotate(180deg);
+}
+
+/* === 下拉面板 === */
+.ms-panel {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  z-index: 100;
+  border: 1.5px solid #e2e8f0;
+  border-radius: 10px;
+  background: #fff;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.1);
+  overflow: hidden;
+}
+
+.dropdown-fade-enter-active {
+  transition: all 0.25s ease;
+}
+
+.dropdown-fade-leave-active {
+  transition: all 0.15s ease-in;
+}
+
+.dropdown-fade-enter-from {
+  opacity: 0;
+  transform: translateY(-4px);
+}
+
+.dropdown-fade-leave-to {
+  opacity: 0;
+  transform: translateY(-4px);
+}
+
+/* 搜索栏 */
+.ms-panel-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 38px;
+  padding: 0 10px;
+  background: #f8fafc;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.ms-search-icon {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  color: #94a3b8;
+}
+
+.ms-search-input {
+  flex: 1;
+  height: 100%;
+  border: none;
+  background: transparent;
+  font-size: 13px;
+  color: #334155;
+  outline: none;
+}
+
+.ms-search-input::placeholder {
+  color: #94a3b8;
+}
+
+.ms-panel-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.ms-action-btn {
+  height: 24px;
+  padding: 0 8px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: #64748b;
+  font-size: 11px;
+  cursor: pointer;
+  transition: color 0.15s;
+  white-space: nowrap;
+}
+
+.ms-action-btn:hover {
+  color: #3b82f6;
+}
+
+/* 模型列表 */
+.ms-list {
+  max-height: 240px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: #cbd5e1 transparent;
+}
+
+.ms-list::-webkit-scrollbar {
+  width: 5px;
+}
+
+.ms-list::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.ms-list::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 10px;
+}
+
+.ms-option {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 38px;
+  padding: 0 12px;
+  cursor: pointer;
+  transition: background 0.1s;
+  user-select: none;
+}
+
+.ms-option:hover {
+  background: #f8fafc;
+}
+
+.ms-option--selected {
+  background: #eff6ff;
+}
+
+.ms-option--selected .ms-option-label {
+  font-weight: 600;
+  color: #1e40af;
+}
+
+.ms-checkbox {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 5px;
+  border: 1.5px solid #d1d5db;
+  background: #fff;
+  flex-shrink: 0;
+  transition: all 0.15s;
+}
+
+.ms-checkbox--checked {
+  background: #3b82f6;
+  border-color: #3b82f6;
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2);
+  animation: check-bounce 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+@keyframes check-bounce {
+  0% { transform: scale(0.8); }
+  50% { transform: scale(1.15); }
+  100% { transform: scale(1); }
+}
+
+.ms-check {
+  width: 12px;
+  height: 12px;
+  color: #fff;
+}
+
+.ms-option-label {
+  font-size: 13px;
+  color: #334155;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ms-empty {
+  padding: 20px;
+  text-align: center;
+  color: #94a3b8;
+  font-size: 13px;
+}
+
+/* 底部信息栏 */
+.ms-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 36px;
+  padding: 0 12px;
+  background: #fafbfc;
+  border-top: 1px solid #e2e8f0;
+}
+
+.ms-footer-info {
+  font-size: 12px;
+  color: #94a3b8;
+}
+
+.ms-footer-btn {
+  height: 24px;
+  padding: 0 8px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: #3b82f6;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.ms-footer-btn:hover {
+  background: #eff6ff;
+}
+
+/* 手动输入框 */
+.ms-manual-input {
+  min-height: 56px;
+  padding: 8px 10px;
+  resize: vertical;
+}
+
+.manual-slide-enter-active {
+  transition: all 0.2s ease;
+}
+
+.manual-slide-leave-active {
+  transition: all 0.15s ease-in;
+}
+
+.manual-slide-enter-from,
+.manual-slide-leave-to {
+  opacity: 0;
+  transform: translateY(-4px);
 }
 
 .priority-control {
